@@ -7,7 +7,7 @@ const VW = 848, VH = 478;
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.15; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
+const CUT_T = 7.2; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
