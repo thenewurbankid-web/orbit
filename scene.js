@@ -58,7 +58,7 @@ const MONO = 'ui-monospace, Menlo, monospace';
 const SUN = new THREE.Vector3(1.0, 0.28, 0.12).normalize(); // off-screen to the right: hard terminators
 // Motion feel (tune here). camera/zoom: seconds for a move to settle (critically damped springs, no overshoot);
 // ships: multiplier on carrier flight times; effects: multiplier on how long effects linger.
-export const MOTION = { camera: 2.6, zoom: 1.2, ships: 1.4, effects: 1.25, maxDt: 1 / 20 };
+export const MOTION = { camera: 2.6, zoom: 1.2, ships: 2.3, effects: 1.25, maxDt: 1 / 20 };
 // Exact critically damped spring step toward `goal` (x, v scalars). Frame-rate independent.
 function spring(x, v, goal, w, dt) {
   const e = Math.exp(-w * dt), d = x - goal, t = v + w * d;
@@ -196,7 +196,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // Run craft: a NASA Juno render with a soft beam of real laser-profile light below it (world-space quad).
   function makeUfo() {
     const g = makeUfoDrawn();
-    const rb = rfx.beam(new THREE.Color(0.7, 0.84, 1.0), 0.3);
+    const rb = rfx.beam(new THREE.Color(0.82, 0.88, 0.96), 0.3);
     rb.userData.keep = true; rb.matrixAutoUpdate = false; rb.matrixWorldAutoUpdate = false; // vertices are in world space
     g.add(rb); g.userData.rbeam = rb;
     return rfx.dress(g, "ufo", { size: 2.6, dim: 0.95 });
@@ -1870,25 +1870,25 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (const [id, u] of ufos) {
       const { lights, beam, beamMat } = u.g.userData;
       u.t += dt;
-      lights.forEach((l, k) => l.material.color.setScalar(((Math.floor(t * 6) % 10) === k ? 2.6 : 0.9)).multiply(new THREE.Color(0.85, 0.92, 1.0)));
+      lights.forEach((l, k) => l.material.color.setScalar(0.75 + 0.45 * Math.max(0, Math.sin(t * 0.9 - k * 0.6))).multiply(new THREE.Color(0.85, 0.92, 1.0)));
       beamMat.uniforms.uTime.value = t;
       if (u.g.userData.real?.on) {
         const rb = u.g.userData.rbeam, top = u.g.position.clone().add(new THREE.Vector3(0, -0.12, 0));
-        rb.userData.set(top, top.clone().add(new THREE.Vector3(0, -1.5, 0)), 0.32);
-        rb.material.uniforms.uOpacity.value = beamMat.uniforms.uOpacity.value * 1.6; rb.material.uniforms.uTime.value = reduced ? 0 : t * 0.05;
+        rb.userData.set(top, top.clone().add(new THREE.Vector3(0, -1.5, 0)), 0.85);
+        rb.material.uniforms.uOpacity.value = beamMat.uniforms.uOpacity.value * 0.7; rb.material.uniforms.uTime.value = reduced ? 0 : t * 0.05;
       }
       if (u.state === "arrive") {
         const k = Math.min(1, u.t / (3 * MOTION.ships)), e = smoother(k);
         const mid = u.from.clone().lerp(u.hover(), 0.6).add(new THREE.Vector3(0, 3, 0));
         u.g.position.copy(new THREE.QuadraticBezierCurve3(u.from, mid, u.hover()).getPoint(e));
-        u.g.rotation.z = (1 - e) * 0.35; u.g.rotation.y += dt * 1.2;
+        u.g.rotation.z = (1 - e) * 0.18; u.g.rotation.y += dt * 0.3;
         beamMat.uniforms.uOpacity.value = 0;
         if (k >= 1) { u.state = "hover"; u.t = 0; }
       } else if (u.state === "hover") {
         const hp = u.hover();
-        u.g.position.set(hp.x, hp.y + (reduced ? 0 : Math.sin(t * 1.3 + u.ao.h * 6) * 0.12), hp.z);
-        u.g.rotation.z *= 0.95; if (!reduced) u.g.rotation.y += dt * 0.6;
-        beamMat.uniforms.uOpacity.value = Math.min(0.32, u.t * 0.3);
+        u.g.position.set(hp.x, hp.y + (reduced ? 0 : Math.sin(t * 0.45 + u.ao.h * 6) * 0.06), hp.z);
+        u.g.rotation.z *= Math.exp(-dt * 1.5); if (!reduced) u.g.rotation.y += dt * 0.12;
+        beamMat.uniforms.uOpacity.value = Math.min(0.13, u.t * 0.06);
         beam.scale.set(1, 1.95, 1);
       } else if (u.state === "sputter") {
         // Lights stutter, the beam dies, and it drifts off tumbling.
