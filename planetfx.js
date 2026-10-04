@@ -296,7 +296,7 @@ export function cityLights(center, radius, sun, count) {
 export function impacts(center, radius, sun, rfx = null) {
   const g = new THREE.Group();
   const real = !!rfx?.ready("explosion");
-  const hits = [0, 1, 2].map((i) => {
+  const hits = [0].map((i) => {
     const d = new THREE.Vector3().randomDirection().lerp(sun, 0.5).normalize();
     const at = surfacePoint(center, radius, d, 0.01);
     const flash = add(new THREE.Mesh(new THREE.CircleGeometry(radius * 0.08, 24), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.55, 0.25).multiplyScalar(3) })));
@@ -310,7 +310,7 @@ export function impacts(center, radius, sun, rfx = null) {
     const s = k * 6;
     for (const h of hits) {
       const lt = s - h.t0;
-      if (real) { if (lt > 0 && !h.hit) { h.hit = true; rfx.boom(h.at, { size: radius * 0.2, dur: 1.7 }); } }
+      if (real) { if (lt > 0 && !h.hit) { h.hit = true; rfx.boom(h.at, { size: radius * 0.07, dur: 1.4 }); } }
       else { h.flash.material.opacity = lt > 0 && lt < 0.4 ? (1 - lt / 0.4) * 0.6 : 0; h.flash.scale.setScalar(1 + Math.max(0, lt) * 0.6); }
       h.crater.material.opacity = lt > 0.1 ? Math.max(0, 0.85 - (lt - 0.1) / 6) : 0;
     }

@@ -1939,8 +1939,8 @@ export async function startScene({ canvas, kbd, reduced }) {
   // A destroyed ship: the real fireball flipbook (silent, like all explosions out here).
   function explode(pos) { snd.play("explosion"); if (!rfx.boom(pos, { size: 0.8, dur: 1.3 * MOTION.effects })) sparksQuiet(pos, new THREE.Color(1, 0.6, 0.25).multiplyScalar(2)); }
   // Weapons fire: our side a subtle green laser, theirs amber; real beam texture, line tracer as the fallback.
-  const OUR_LASER = new THREE.Color(0.32, 1.0, 0.5), THEIR_LASER = new THREE.Color(1.0, 0.55, 0.2);
-  function shoot(a, b, ours) { if (rfx.bolt(a, b, { color: ours ? OUR_LASER : THEIR_LASER, width: ours ? 0.022 : 0.03, dur: ours ? 0.36 : 0.5 })) return true; return false; }
+  const OUR_LASER = new THREE.Color(0.32, 1.0, 0.5), THEIR_LASER = new THREE.Color(0.62, 0.5, 0.4);
+  function shoot(a, b, ours) { if (rfx.bolt(a, b, { color: ours ? OUR_LASER : THEIR_LASER, width: ours ? 0.016 : 0.012, dur: ours ? 0.3 : 0.24 })) return true; return false; }
 
   // Outgoing message: a drone flies out, waits for the POST, drops its data cube with a beam, flies back.
   function sendDrone(agentId, company, label, promise) {
@@ -2033,7 +2033,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       if ([...hostiles.values()].filter((h) => h.state !== "dying" && h.state !== "retreat").length >= 4) continue;
       const used = new Set([...hostiles.values()].map((h) => h.slot));
       const sl = [0, 1, 2, 3].find((k) => !used.has(k)) ?? 0;
-      const g = rfx.dress(makeHostile(), "hostile", { size: 0.62, dim: 0.5, warm: 0.55 }); world.add(g);
+      const g = rfx.dress(makeHostile(), "hostile", { size: 0.48, dim: 0.42, warm: 0.12 }); world.add(g);
       const tgt = targetFor(issue.assigneeAgentId, company.prefix);
       const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: instant || reduced || !tgt ? "hover" : "arrive", t: 0, fire: 2 + Math.random() * 4, ndc: hoverNdc(sl), d: HOSTILE_D };
       // Arrival starts where the asking moon is on screen (or off the near side edge), at its depth.
@@ -2049,7 +2049,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (hostileBadge) { world.remove(hostileBadge); hostileBadge = null; }
     if (extra > 0) { hostileBadge = textSprite(`+${extra} more waiting`, { px: 34, color: C.amber, font: MONO, weight: 500 }); hostileBadge.material.opacity = 0.9; world.add(hostileBadge); }
   }
-  const tracerMat = new THREE.LineBasicMaterial({ color: new THREE.Color(1, 0.62, 0.25).multiplyScalar(2.6), transparent: true, opacity: 0, depthWrite: false });
+  const tracerMat = new THREE.LineBasicMaterial({ color: new THREE.Color(0.62, 0.5, 0.4).multiplyScalar(0.9), transparent: true, opacity: 0, depthWrite: false });
   const tracer = new THREE.Line(new THREE.BufferGeometry().setFromPoints([v3(), v3()]), tracerMat); world.add(tracer);
   let tracerT = 0;
   function updateHostiles(dt) {
@@ -2061,7 +2061,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       h.ndc.lerp(hoverNdc(h.slot, ndcTmp), easeK(dt, 3));
       const bob = reduced ? 0 : 1;
       const home = viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D).add(v3().set(Math.sin(clock * 0.4 + h.slot) * 0.15 * bob, Math.cos(clock * 0.3 + h.slot) * 0.1 * bob, 0));
-      h.g.userData.lights.forEach((l, i) => (l.visible = reduced || Math.floor(clock * 2 + i) % 3 !== 0));
+      h.g.userData.lights.forEach((l, i) => (l.visible = reduced || Math.floor(clock * 0.5 + i) % 4 !== 0));
       if (h.state === "arrive") {
         const k = Math.min(1, h.t / (3 * MOTION.ships)), e = smoother(k);
         // Path in screen space (kept below the HUD's top band), depth eased from the moon's to the rest depth.
@@ -2069,11 +2069,11 @@ export async function startScene({ canvas, kbd, reduced }) {
         const nx = h.from.x + (h.ndc.x - h.from.x) * e, ny = Math.min(h.from.y + (h.ndc.y - h.from.y) * e, yMax);
         const p = viewPoint(nx, ny, h.from.d + (HOSTILE_D - h.from.d) * e).lerp(home, e * e);
         h.g.lookAt(camera.position); h.g.position.copy(p);
-        trail(p.clone().add(new THREE.Vector3(0, 0, -0.2)), new THREE.Color(1, 0.55, 0.2).multiplyScalar(1.4));
+        trail(p.clone().add(new THREE.Vector3(0, 0, -0.2)), new THREE.Color(0.6, 0.5, 0.42).multiplyScalar(0.5));
         if (k >= 1) { h.state = "hover"; h.t = 0; }
       } else if (h.state === "hover") {
         h.g.position.copy(home); h.g.lookAt(camera.position);
-        if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 5 + Math.random() * 6; const a = h.g.position, b = viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8);
+        if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 22 + Math.random() * 20; const a = h.g.position, b = viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8);
           if (!shoot(a.clone(), b, false)) { tracer.geometry.attributes.position.setXYZ(0, a.x, a.y, a.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.25; } } }
       } else if (h.state === "retreat") {
         // Pull away into the distance along our line of sight: it shrinks toward its own screen point, clear of the HUD.
