@@ -116,8 +116,9 @@ export function runIntro(opts) {
     Object.assign(video.style, { left: rect.left + "px", top: rect.top + "px", width: rect.w + "px", height: rect.h + "px", transform: "none" });
     // The source is 848x478; on phones it is scaled 2-4x. A touch of blur scaled to that, plus grain and a
     // vignette (below), hides the pixels and reads as a filmic, slightly out-of-focus shot.
+    if (H > W && !started && !reduced) { const o = buttonOffset(); video.style.transform = `translate(${o.dx}px, ${o.dy}px)`; hot.style.left = hint.style.left = o.bx + "px"; hot.style.top = hint.style.top = o.by + "px"; }
     const up = (rect.w * (devicePixelRatio || 1)) / VW;
-    video.style.filter = up > 1.6 ? `blur(${Math.min(1.4, (up - 1.6) * 0.35 + 0.35).toFixed(2)}px) contrast(1.06) saturate(1.06)` : "contrast(1.04) saturate(1.04)";
+    video.style.filter = up > 2.2 ? `blur(${Math.min(0.5, (up - 2.2) * 0.12 + 0.2).toFixed(2)}px) contrast(1.05) saturate(1.05)` : "contrast(1.04) saturate(1.04)"; // only a touch, to soften blocky upscaling
     hot.style.left = hint.style.left = rect.left + BUTTON.x * rect.w + "px";
     hot.style.top = hint.style.top = rect.top + BUTTON.y * rect.h + "px";
     { const bx = rect.left + BUTTON.x * rect.w, by = rect.top + BUTTON.y * rect.h;
@@ -305,34 +306,32 @@ export function runIntro(opts) {
   }
   // Portrait phones: the video is centred, so the door button sits off screen. Glide the video sideways to
   // bring the button into view, light it up as if pressed, then glide back to centre and carry on.
+  function buttonOffset() {
+    const W = innerWidth, H = innerHeight, bx = rect.left + BUTTON.x * rect.w, by0 = rect.top + BUTTON.y * rect.h;
+    const dx = Math.min(-rect.left, Math.max(W - (rect.left + rect.w), W / 2 - bx));
+    const dy = Math.min(-rect.top, Math.max(H - (rect.top + rect.h), H / 2 - by0));
+    return { dx, dy, bx: bx + dx, by: by0 + dy };
+  }
   function panToButton(then) {
     const W = innerWidth, H = innerHeight;
-    const bx = rect.left + BUTTON.x * rect.w;
-    if (H <= W || reduced || (bx > 60 && bx < W - 60)) return then();
-    // Pan relative to the viewport centre: move the frame by the button's offset from centre (both axes),
-    // limited so the video always covers the screen.
-    const by0 = rect.top + BUTTON.y * rect.h;
-    const dx = Math.min(-rect.left, Math.max(W - (rect.left + rect.w), W / 2 - bx));
-    const dy = Math.min(-rect.top, Math.max(H - (rect.top + rect.h), H / 2 - by0)) * 0.6; // a lighter vertical move
-    const shift = dx, bxAt = bx + dx, by = by0 + dy;
-    video.style.transition = "transform 900ms cubic-bezier(.65,0,.35,1)";
-    video.style.transform = `translate(${dx}px, ${dy}px)`;
-    // a soft ring on the button once it arrives, then the press
+    if (H <= W || reduced) return then();
+    const o = buttonOffset();
     const ring = document.createElement("div");
-    Object.assign(ring.style, { position: "fixed", left: bxAt + "px", top: by + "px", width: "64px", height: "64px", margin: "-32px 0 0 -32px", borderRadius: "50%",
+    Object.assign(ring.style, { position: "fixed", left: o.bx + "px", top: o.by + "px", width: "64px", height: "64px", margin: "-32px 0 0 -32px", borderRadius: "50%",
       border: "1.5px solid rgba(200,240,255,.9)", boxShadow: "0 0 18px rgba(120,210,255,.7)", opacity: "0", transform: "scale(.6)", zIndex: 30, pointerEvents: "none",
       transition: "opacity 300ms ease, transform 500ms cubic-bezier(.22,1,.36,1)" });
     document.body.appendChild(ring);
-    setTimeout(() => { ring.style.opacity = "1"; ring.style.transform = "scale(1)"; }, 850);
-    setTimeout(() => { ring.style.transform = "scale(.85)"; }, 1350); // the press
-    setTimeout(() => { ring.style.opacity = "0"; ring.style.transform = "scale(1.6)"; }, 1600);
+    setTimeout(() => { ring.style.opacity = "1"; ring.style.transform = "scale(1)"; }, 250);
+    setTimeout(() => { ring.style.transform = "scale(.85)"; }, 750);   // the press
+    setTimeout(() => { ring.style.opacity = "0"; ring.style.transform = "scale(1.6)"; }, 1000);
     setTimeout(() => {
-      video.style.transition = "transform 1400ms cubic-bezier(.65,0,.35,1)";
-      video.style.transform = "translate(0px, 0px)";
       ring.remove();
+      video.style.transition = "transform 1400ms cubic-bezier(.65,0,.35,1)";
+      video.style.transform = "translate(0px, 0px)"; // glide back to the video's centre
       then();
-    }, 1750);
+    }, 1150);
   }
+
   // START on the title goes straight into the video with the remembered projects (or all of them).
   // If no projects are found, it stops at the door and shows how to connect one (or the demo).
   async function autoStart() {
