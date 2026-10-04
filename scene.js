@@ -2051,7 +2051,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (!comps.length) return;
     const score = (c) => c.issues.filter((i) => i.questions?.length).length * 100 + c.issues.filter((i) => i.status === "blocked").length * 10 + c.issues.filter((i) => i.status === "in_progress").length;
     const best = comps.reduce((a, c) => (score(c) > score(a) ? c : a), comps[0]);
-    setTimeout(() => goCompany(best.prefix), reduced ? 0 : 450);
+    intro.drift = null; intro.reveal = null;
+    goCompany(best.prefix); // the flight in carries on the forward motion of the flash
   });
   store.on("introHud", (h) => { intro.hud = h ? { t0: performance.now() } : { t0: -1 }; kick(); });
   function updateIntro(now, dt) {

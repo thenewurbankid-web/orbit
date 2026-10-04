@@ -7,7 +7,7 @@ const VW = 848, VH = 478;
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 6.75; // just before the video's bright warp flash (~7.0 s): we cut on the flash, before its own planets appear
+const CUT_T = 7.15; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -279,7 +279,23 @@ export function runIntro(opts) {
     opts.sound?.("press"); // unlock audio on this gesture
     dissolve(title);
     title = null;
-    hot.style.display = hint.style.display = "";
+    autoStart();
+  }
+  // START on the title goes straight into the video with the remembered projects (or all of them).
+  // If no projects are found, it stops at the door and shows how to connect one (or the demo).
+  async function autoStart() {
+    if (opts.mode === "phone") { hot.style.display = hint.style.display = ""; return; }
+    const r = await opts.check().catch(() => ({ projects: [] }));
+    const projects = r.projects ?? [];
+    started = true; hot.style.display = hint.style.display = "none";
+    const last = opts.lastSelection?.();
+    // No projects found, or none remembered: keep the door shut (video paused) and show the menu.
+    if (!projects.length) return check();
+    if (last === "demo") return choose("demo");
+    const known = new Set(projects.map((p) => p.id));
+    const ids = Array.isArray(last) ? last.filter((id) => known.has(id)) : [];
+    if (!ids.length) return check();
+    opts.select?.(ids); choose("enter");
   }
   showTitle();
   addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
@@ -292,6 +308,7 @@ export function runIntro(opts) {
     dissolve(sel);
     if (title) { dissolve(title); title = null; }
     if (chosen === "demo") opts.onDemo();
+    canvas.style.transition = ""; canvas.style.opacity = "1"; // start drawing our scene under the video well before the cut
     goToCut();
   }
   // Reach the cut frame: fast-forward smoothly if it is ahead, then cut.
@@ -355,34 +372,30 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    // Cut on the video's warp flash: a bright flash covers the swap, so the video's own window
-    // (and its planets) never shows; our scene appears as the flash fades.
-    const flash = document.createElement("div");
-    Object.assign(flash.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
-      background: "radial-gradient(60% 55% at 50% 42%, #ffffff 0%, #e6f6ff 30%, rgba(170,220,255,.85) 60%, rgba(40,70,100,.9) 100%)",
-      transition: "opacity 260ms cubic-bezier(.4,0,1,1)" });
-    document.body.appendChild(flash);
+    // Freeze on the settled, still-dark window and zoom into it while our scene fades in behind:
+    // it reads as the camera pushing through the window into our sky.
+    video.pause();
+    fadeOutVideo();
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
     tr = { frame, W, H };
-    requestAnimationFrame(() => { flash.style.opacity = "1"; });
-    setTimeout(() => {
-      fadeOutVideo();
-      video.style.opacity = "0";
-      root.style.background = "transparent";
-      canvas.style.transition = ""; canvas.style.opacity = "1";
-      frame?.setOpening(null, W, H); frame?.setOpacity(1); frame?.setZ(2);
-      flash.style.transition = "opacity 1100ms cubic-bezier(.22,1,.36,1)";
-      flash.style.opacity = "0";
-      setTimeout(() => flash.remove(), 1200);
-      finish();
-    }, reduced ? 0 : 280);
+    canvas.style.transition = ""; canvas.style.opacity = "1";
+    root.style.background = "transparent";
+    frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
+    const DUR = reduced ? 0 : 1300;
+    video.style.transformOrigin = "50% 43%";
+    video.style.transition = `transform ${DUR}ms cubic-bezier(.65,0,.35,1), opacity ${DUR * 0.6}ms ease-in ${DUR * 0.35}ms`;
+    requestAnimationFrame(() => { video.style.transform = "scale(1.7)"; video.style.opacity = "0"; });
+    const t0 = performance.now();
+    const fadeFrame = () => { const k = Math.min(1, (performance.now() - t0 - DUR * 0.45) / (DUR * 0.6)); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
+    reduced ? frame?.setOpacity(1) : fadeFrame();
+    opts.emit?.("introFocus", true); // our camera flies forward into a planet at the same time
+    setTimeout(finish, DUR + 50);
   }
   function finish() {
     opts.sound?.("enter"); // our ship sound starts only once the video is over
     root.remove(); removeEventListener("resize", place);
     opts.emit?.("introHud", true);
-    opts.emit?.("introFocus", true); // fly into one of our planets
     opts.onDone?.(chosen);
   }
   return { root };
