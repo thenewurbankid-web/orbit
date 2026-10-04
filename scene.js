@@ -2971,7 +2971,7 @@ export async function startScene({ canvas, kbd, reduced }) {
 
     // Render: full rate while something moves; a low idle rate keeps the stars alive.
     const active = now < activeUntil || running.length > 0 || particles.alive > 0 || rfx.busy || floaters.length > 0 || pointers.size > 0 || flight.on || starStreak > 0.003 || Math.abs(rig.goal.dist - rig.dist) > 0.05 || rig.target.distanceTo(rig.goal.target) > 0.02 || [...ufos.values()].some((u) => u.state !== "hover") || !!loneUfo || film.uniforms.uPulse.value >= 0 || slate.editing || now < slate.animUntil || (slate.plate.visible && sinceOpen < 1);
-    const idleGap = 100; // at least ~10 fps when idle
+    const idleGap = 1000 / (tier.fpsIdle || 10); // idle rate per tier (60 desktop, 30 phones, 6 weak) so slow drift stays smooth
     if (active || dirty || now - lastRender >= idleGap) {
       const t0 = performance.now();
       composer.render(dt);
