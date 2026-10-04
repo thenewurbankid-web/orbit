@@ -10,7 +10,7 @@ const POINT = [[7.05, 0.5, 0.283], [7.2, 0.5, 0.283], [7.3, 0.5, 0.333], [7.4, 0
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.1; // last dark frame before the video's own flash; we freeze here and draw our own
+const CUT_T = 9.667; // freeze frame (frame 232 at 24 fps), picked by the owner in the Flash Tuner
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
