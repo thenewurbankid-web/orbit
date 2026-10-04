@@ -125,6 +125,9 @@ export function createDemo(hooks) {
     () => setStatus("HLX-3", "in_progress"),
     () => estimate("HLX-1", 55),
     () => setStatus("TDE-2", "done"),
+    () => { const b = clone(board); b.alerts = [{ id: "demo-red", level: "critical", text: "ORB-5 run failed twice in a row", issueId: "ORB-5", identifier: "ORB-5", company: "ORB", since: now(), acked: false }]; board = b; push(b); logLine("▼▼ CRITICAL · ORB-5 run failed twice in a row", "ORB-5"); },
+    () => {},
+    () => { const b = clone(board); b.alerts = []; board = b; push(b); },
     () => reset(),
   ];
   let k = 0, timer = null;
@@ -138,6 +141,9 @@ export function createDemo(hooks) {
   }
 
   async function act(action, p = {}) {
+    if (action === "ack") { board = { ...board, alerts: (board.alerts ?? []).map((a) => (a.id === p.id ? { ...a, acked: true } : a)) }; push(clone(board)); return { ok: true }; }
+    if (action === "available") return [{ id: "c-new", name: "Nebula Labs", prefix: "NEB", open: 3, total: 5, tracked: false }];
+    if (action === "companies") throw new Error("Connecting projects is not available in the demo");
     if (action === "refresh") { push(clone(board)); return { ok: true }; }
     if (action === "config") { board = { ...board, intervalSec: p.intervalSec }; push(clone(board)); return { intervalSec: p.intervalSec }; }
     if (action === "comment") { const i = board.companies.flatMap((c) => c.issues).find((x) => x.id === p.issueId); msg({ role: "comment", fromUser: true, agentId: i?.assigneeAgentId, agentName: "You", company: companyOf(i?.identifier), issueId: p.issueId, issue: i?.identifier, text: p.text }); return { ok: true }; }

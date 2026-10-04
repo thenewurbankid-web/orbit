@@ -8,12 +8,13 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { BokehPass } from "three/addons/postprocessing/BokehPass.js";
-import { companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, messagesFor, toggleList, startPairing, applyAnswer, stopPairing, answerQuestion, copyText, helperBrief, helperAsk, helperLines, helperState } from "./app.js";
+import { openConnectPanel, openHelpPanel, companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, messagesFor, toggleList, startPairing, applyAnswer, stopPairing, answerQuestion, copyText, helperBrief, helperAsk, helperLines, helperState } from "./app.js";
 import * as fx from "./fx.js";
 import { bakePlanet, bakeNebula, NEBULA_CENTRES, KIND } from "./planets.js";
 import * as pfx from "./planetfx.js";
 import { createFrame, frameMetrics } from "./frame.js";
 import { makeDrone, makeFighter, makePod, makeHostile } from "./carriers.js";
+import * as snd from "./sound.js";
 
 // Black board: soft grey text; only the active or important item is brighter.
 const C = {
@@ -282,10 +283,15 @@ export async function startScene({ canvas, kbd, reduced }) {
   const pickables = [];
   let portrait = false;
 
-  function companyCenter(i) {
-    return portrait
+  function companyCenter(i, n = store.board?.companies?.length ?? 3) {
+    if (n <= 3 && i < 3) return portrait
       ? [new THREE.Vector3(-5, 22, -54), new THREE.Vector3(5, 0, -54), new THREE.Vector3(-4, -22, -54)][i]
       : [new THREE.Vector3(-30, 2, -52), new THREE.Vector3(0, 6, -58), new THREE.Vector3(30, -1, -52)][i];
+    // More projects: spread along a gentle arc (columns on phones).
+    const k = n === 1 ? 0.5 : i / (n - 1), span = Math.min(80, 22 * (n - 1));
+    return portrait
+      ? new THREE.Vector3((i % 2 ? 5 : -5), span / 2 - k * span, -54 - (i % 2) * 4)
+      : new THREE.Vector3(-span / 2 + k * span, Math.sin(i * 1.7) * 6, -52 - Math.abs(k - 0.5) * -8 - (i % 2) * 6);
   }
 
   function syncSky() {
@@ -297,8 +303,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (!co) {
         // A planet: dark, restrained surface lit by one distant sun, thin rim, slow spin.
         const look = PLANET_LOOK[c.prefix] ?? PLANET_LOOK.default;
-        const kind = { BOX: KIND.desert, CLA: KIND.rocky, VIS: KIND.ocean }[c.prefix] ?? [KIND.desert, KIND.rocky, KIND.ocean][ci % 3];
-        const maps = bakePlanet(renderer, kind, hash(c.prefix) * 50, tier.mobile ? 1024 : 2048);
+        const kind = KIND[c.planet?.kind] ?? { BOX: KIND.desert, CLA: KIND.rocky, VIS: KIND.ocean }[c.prefix] ?? [KIND.desert, KIND.rocky, KIND.ocean, KIND.ice, KIND.gas][Math.floor(hash(c.id ?? c.prefix) * 5)];
+        const maps = bakePlanet(renderer, kind, c.planet?.seed ?? hash(c.prefix) * 50, tier.mobile ? 1024 : 2048);
         // Matte: no specular hotspot, relief from the normal map along the terminator.
         const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), new THREE.MeshStandardMaterial({ map: maps.map, normalMap: maps.normalMap, normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1, metalness: 0 }));
         if (maps.clouds) {
@@ -316,9 +322,20 @@ export async function startScene({ canvas, kbd, reduced }) {
         const track = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0x404040, transparent: true, opacity: 0.35, depthWrite: false }));
         const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0xb8b8b8, transparent: true, opacity: 0.7, depthWrite: false }));
         ring.geometry.setDrawRange(0, 0);
-        co = { group: new THREE.Group(), planet, rim, track, ring, ringShown: 0, spin: 0.02 + hash(c.prefix) * 0.02, label: textSprite(c.name, { px: 46, worldH: 1.3, color: C.ink, weight: 500 }), prefix: c.prefix, name: c.name };
+        // Gas giants get a thin, matte ring system.
+        let rings = null;
+        if (kind === KIND.gas) {
+          const rg = new THREE.RingGeometry(1.45, 2.3, 96, 1);
+          const rt = (() => { const cc = document.createElement("canvas"); cc.width = 256; cc.height = 1; const x = cc.getContext("2d"); for (let i = 0; i < 256; i++) { const v = 0.35 + 0.65 * Math.abs(Math.sin(i * 0.21 + (c.planet?.seed ?? 1)) * Math.sin(i * 0.047)); x.fillStyle = `rgba(200,190,175,${(v * (i > 20 && i < 245 ? 0.75 : 0.2)).toFixed(3)})`; x.fillRect(i, 0, 1, 1); } return new THREE.CanvasTexture(cc); })();
+          const pos = rg.attributes.position, uv = rg.attributes.uv;
+          for (let i = 0; i < pos.count; i++) { const r = Math.hypot(pos.getX(i), pos.getY(i)); uv.setXY(i, (r - 1.45) / 0.85, 0.5); }
+          rings = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({ map: rt, transparent: true, side: THREE.DoubleSide, roughness: 1, metalness: 0, depthWrite: false }));
+          rings.rotation.x = -1.2;
+        }
+        co = { group: new THREE.Group(), planet, rim, track, ring, rings, ringShown: 0, spin: 0.02 + hash(c.prefix) * 0.02, label: textSprite(c.name, { px: 46, worldH: 1.3, color: C.ink, weight: 500 }), prefix: c.prefix, name: c.name };
         Object.assign(co.label.userData, { kind: "planet", ownerId: c.prefix });
         co.group.add(planet, rim, track, ring, co.label);
+        if (rings) co.group.add(rings);
         world.add(co.group);
         companyObjs.set(c.prefix, co);
       }
@@ -327,6 +344,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       co.radius = Math.min(5, 2 + openCount * 0.3);
       co.planet.position.copy(co.center); co.planet.scale.setScalar(co.radius);
       co.rim.position.copy(co.center); co.rim.scale.setScalar(co.radius);
+      if (co.rings) { co.rings.position.copy(co.center); co.rings.scale.setScalar(co.radius); }
       // The company's overall % is a thin ring around the planet.
       for (const r of [co.track, co.ring]) { r.position.copy(co.center); r.scale.setScalar(co.radius * 1.32); r.rotation.set(-1.25, 0, 0.18); }
       co.ringPct = companyProgress(c) ?? 0;
@@ -1064,7 +1082,8 @@ export async function startScene({ canvas, kbd, reduced }) {
   // ---------------- HUD: KPI numbers on the window, minimal control strip ----------------
   const HUDF = '"JetBrains Mono", ui-monospace, Menlo, monospace';
   const kpiPrev = new Map(); const kpiFlash = new Map();
-  const panel = { bright: 0, sound: false };
+  const panel = { bright: 0 };
+  const VOLS = [0.2, 0.4, 0.6, 0.8, 1];
   function kpis() {
     const s = summary();
     const agentsWorking = store.agents.filter((a) => a.live).length;
@@ -1137,7 +1156,10 @@ export async function startScene({ canvas, kbd, reduced }) {
       { id: "interval", label: narrow ? `/${store.board?.intervalSec ?? 15}s` : `every ${store.board?.intervalSec ?? 15}s` },
       { id: "view", label: narrow ? viewName : `view ${viewName}` },
       ...(store.mode === "host" || store.mode === "remote" ? [{ id: "pair", label: pairState === "connected" ? (narrow ? "linked" : "phone linked") : store.mode === "remote" ? "link" : narrow ? "pair" : "pair phone", on: pairState === "connected" }] : []),
-      { id: "sound", label: panel.sound ? (narrow ? "snd on" : "sound on") : (narrow ? "snd off" : "sound off"), on: panel.sound },
+      { id: "sound", label: snd.soundState().muted ? (narrow ? "muted" : "sound off") : (narrow ? "snd" : "sound on"), on: !snd.soundState().muted },
+      { id: "vol", label: `vol ${Math.round(snd.soundState().volume * 100)}%` },
+      { id: "project", label: narrow ? "+" : "+ project" },
+      { id: "help", label: "?" },
     ];
     x.font = `300 11px ${HUDF}`; x.textBaseline = "middle"; x.textAlign = "left";
     const widths = items.map((it) => x.measureText(it.label).width + (it.ring != null ? 22 : 0) + 22);
@@ -1162,6 +1184,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // ---------------- window frame and readout screens ----------------
   // Window frame: SVG overlay (frame.js), outside the WebGL post-processing.
   const svgFrame = createFrame(document.body);
+  store.frameApi = svgFrame;
   const readouts = []; // {plate, t0, issueId, agentId, slot}
   let fm = frameMetrics(1, 1);
   function frameInset() { return fm.side; }
@@ -1329,18 +1352,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (feed.anim && performance.now() < feed.anim) drawFeed();
   }
 
-  // Console blips (off by default).
-  let audio = null;
-  function blip(freq = 660, dur = 0.08) {
-    if (!panel.sound) return;
-    try {
-      audio ||= new AudioContext();
-      const o = audio.createOscillator(), g = audio.createGain();
-      o.type = "sine"; o.frequency.value = freq;
-      g.gain.setValueAtTime(0.0001, audio.currentTime); g.gain.exponentialRampToValueAtTime(0.05, audio.currentTime + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + dur);
-      o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + dur + 0.02);
-    } catch { /* no audio */ }
-  }
+  // Sound: synthesised ship audio (sound.js). Small UI clicks map to "click".
+  function blip() { snd.play("click"); }
 
   // Selection brackets: corners locked onto the selected planet, moon or satellite, with a readout.
   let bracketKey = "";
@@ -1601,10 +1614,12 @@ export async function startScene({ canvas, kbd, reduced }) {
   function trail(p, col, n = 1) { for (let i = 0; i < n; i++) particles.emit(p.clone(), v3().randomDirection().multiplyScalar(0.05), col, GREY, 0.18, 0.4); }
   function orient(g, from, to, bank) { g.lookAt(to); g.rotateZ(bank); }
   function fizzle(pos) { for (let i = 0; i < 26; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.6 + Math.random()), RED, GREY, 0.3, 0.6); }
-  function sparks(pos, col) { for (let i = 0; i < 40; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.8 + Math.random() * 1.6), col, GREY, 0.3, 0.9); }
+  function sparks(pos, col) { snd.play("explosion"); sparksQuiet(pos, col); }
+  function sparksQuiet(pos, col) { for (let i = 0; i < 40; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.8 + Math.random() * 1.6), col, GREY, 0.3, 0.9); }
 
   // Outgoing message: a drone flies out, waits for the POST, drops its data cube with a beam, flies back.
   function sendDrone(agentId, company, label, promise) {
+    snd.play("whirr");
     const tgt = targetFor(agentId, company);
     if (!tgt || reduced) return promise.then(() => readout(`▲ Delivered · ${label}`, "+"), (e) => readout(`▼ Not delivered · ${e.message}`, "-"));
     const g = makeDrone(); g.scale.setScalar(0.7); world.add(g);
@@ -1641,6 +1656,7 @@ export async function startScene({ canvas, kbd, reduced }) {
 
   // Incoming update: a pod launches from the moon and opens at our window, then the readout appears.
   function incomingPod(agentId, company, amber, onArrive) {
+    snd.play("ping");
     const tgt = targetFor(agentId, company);
     if (!tgt || reduced || flights.length >= 6) return onArrive();
     const g = makePod(amber); world.add(g);
@@ -1733,7 +1749,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         const a = f.t * 3.2, p = hp.clone().add(new THREE.Vector3(Math.cos(a) * 0.7, Math.sin(a * 1.3) * 0.25, Math.sin(a) * 0.7));
         orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0.7); g.position.copy(p);
         g.userData.engines.forEach((e) => trail(e.getWorldPosition(v3()), new THREE.Color(0.75, 0.9, 1).multiplyScalar(1.3)));
-        if (Math.random() < dt * 3) { const b = hp; tracer.geometry.attributes.position.setXYZ(0, p.x, p.y, p.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.15; }
+        if (Math.random() < dt * 3) { snd.play("laser"); const b = hp; tracer.geometry.attributes.position.setXYZ(0, p.x, p.y, p.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.15; }
         if (f.t > 1.5 && f.result === "ok") { h.state = Math.random() < 0.5 ? "dying" : "retreat"; h.t = 0; h.from = hp.clone(); readout(`▲ Answered · ${label}`, "+"); f.phase = "home"; f.t = 0; f.from = p.clone(); }
         else if (f.t > 1.5 && (f.result === "fail" || f.t > 25)) { fizzle(p); readout(`▼ Answer not sent · ${f.err ?? "no reply"} · question still open`, "-"); h.engaged = false; f.phase = "driven"; f.t = 0; f.from = p.clone(); }
       } else if (f.phase === "home") {
@@ -1752,6 +1768,76 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (let i = flights.length - 1; i >= 0; i--) { if (flights[i].update(dt) === false) { world.remove(flights[i].g); flights.splice(i, 1); } }
     if (flights.length) activeUntil = Math.max(activeUntil, performance.now() + 100);
   }
+
+  // ---------------- projects: connect, disconnect, re-roll ----------------
+  store.on("openConnect", () => openConnectPanel());
+  store.on("openHelp", () => openHelpPanel());
+  async function planetMenu(prefix) {
+    const co = companyObjs.get(prefix); if (!co || store.mode === "demo") return;
+    const c = store.board.companies.find((x) => x.prefix === prefix);
+    const ui = await import("./ui.js");
+    const p = ui.frostPanel(`<h2>${co.name.toUpperCase()} · ${prefix}</h2><p>Disconnecting only stops this board from watching it. Nothing changes in Paperclip.</p>
+      <div class="btns"><button class="reroll dim">RE-ROLL LOOK</button><button class="disc">DISCONNECT</button><button class="dim close">CLOSE</button></div><p class="err"></p>`, { width: 420 });
+    const err = p.el.querySelector(".err");
+    p.el.querySelector(".close").onclick = () => p.close();
+    p.el.querySelector(".reroll").onclick = async () => { try { await act("companies", { action: "reroll", id: c.id }); rebuildPlanet(prefix); p.close(); } catch (e2) { err.textContent = e2.message; } };
+    p.el.querySelector(".disc").onclick = async (ev) => {
+      if (ev.target.dataset.sure !== "1") { ev.target.dataset.sure = "1"; ev.target.textContent = "CONFIRM DISCONNECT"; return; }
+      try { driftAway(prefix); await act("companies", { action: "remove", id: c.id }); readout(`• Disconnected · ${co.name}`, "0"); p.close(); } catch (e2) { err.textContent = e2.message; }
+    };
+  }
+  function rebuildPlanet(prefix) { const co = companyObjs.get(prefix); if (co) { world.remove(co.group); companyObjs.delete(prefix); } syncSky(); }
+  const leaving = [];
+  function driftAway(prefix) {
+    const co = companyObjs.get(prefix); if (!co) return;
+    companyObjs.delete(prefix);
+    leaving.push({ g: co.group, t: 0, dir: co.center.clone().normalize().add(new THREE.Vector3(0, 0.3, -1)).normalize() });
+    snd.play("whirr");
+  }
+  // A new project's planet forms from an accretion swirl.
+  const forming = new Map(); // prefix → {t}
+  store.on("projectAdded", (c) => { if (c) { forming.set(c.prefix, { t: 0 }); readout(`▲ Connected · ${c.name}`, "+"); snd.play("chime"); } });
+  function updateProjects(dt) {
+    for (let i = leaving.length - 1; i >= 0; i--) {
+      const l = leaving[i]; l.t += dt; l.g.position.addScaledVector(l.dir, dt * 12 * l.t);
+      l.g.traverse((o) => { if (o.material) { o.material.transparent = true; o.material.opacity = Math.max(0, 1 - l.t / 2.2); } });
+      if (l.t > 2.2) { world.remove(l.g); leaving.splice(i, 1); }
+    }
+    for (const [prefix, f] of forming) {
+      const co = companyObjs.get(prefix); if (!co) continue;
+      f.t += dt; const k = Math.min(1, f.t / 2);
+      co.planet.scale.setScalar(co.radius * (reduced ? 1 : k * k * (3 - 2 * k)));
+      if (!reduced && k < 0.9) for (let n = 0; n < 6; n++) {
+        const a = Math.random() * Math.PI * 2, r = co.radius * (3.5 - 3 * k) * (0.6 + Math.random() * 0.6);
+        const p = co.center.clone().add(new THREE.Vector3(Math.cos(a) * r, (Math.random() - 0.5) * r * 0.25, Math.sin(a) * r));
+        const v = co.center.clone().sub(p).multiplyScalar(0.9).add(new THREE.Vector3(-Math.sin(a), 0, Math.cos(a)).multiplyScalar(r * 0.8));
+        particles.emit(p, v, new THREE.Color(0.75, 0.82, 0.9), GREY, 0.35, 0.9);
+      }
+      if (k >= 1) forming.delete(prefix);
+      activeUntil = Math.max(activeUntil, performance.now() + 100);
+    }
+  }
+
+  // ---------------- alerts: red alert (critical) and amber (warning) ----------------
+  const alertUI = (await import("./ui.js")).createAlertUI({ onTap: async (a) => {
+    try { await act("ack", { id: a.id }); } catch {}
+    if (store.mode === "demo") { store.board.alerts = []; syncAlerts(); }
+    if (a.issueId && issueObjs.has(a.issueId)) goIssue(a.issueId); else if (a.company && companyObjs.has(a.company)) goCompany(a.company);
+  } });
+  let alertKey = "";
+  function syncAlerts() {
+    const list = (store.board?.alerts ?? []).filter((a) => !a.acked);
+    const top = list[0] ?? null;
+    const key = top ? top.id + top.level : "";
+    if (key !== alertKey) {
+      if (top && top.level === "warning") snd.play("warn");
+      alertKey = key;
+    }
+    alertUI.show(top);
+    snd.klaxon(Boolean(top && top.level === "critical"));
+    svgFrame.setAlert?.(top?.level ?? null);
+  }
+  store.on("board", () => syncAlerts());
 
   // ---------------- events: one table maps every detected change to an effect ----------------
   // tone: + positive (cool white/teal), - negative (amber/red), 0 neutral.
@@ -1791,7 +1877,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (incoming) incomingPod(ctx.agentId, ctx.company, false, () => readout(`Incoming · ${ctx.agentId ? agentObjs.get(ctx.agentId)?.data?.name ?? "" : ctx.company ?? ""} · ${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null));
     else show();
     feedAdd({ ts: new Date().toISOString(), company: ctx.company ?? null, text: `${mark} ${ev.text(ctx.label, ctx.detail)}`, tone: ev.tone, issueId: ctx.issueId ?? null, agentId: ctx.agentId ?? null });
-    blip(ev.tone === "+" ? 880 : ev.tone === "-" ? 330 : 600, 0.09);
+    snd.play({ done: "chime", failed: "rumble", question: "alarm", newIssue: "ping", runStart: "whirr" }[type] ?? (ev.tone === "-" ? "warn" : "ping"));
     if (!ev.fx || reduced) return;
     const co = planetFor(ctx.company); const ao = ctx.agentId ? agentObjs.get(ctx.agentId) : null;
     const build = {
@@ -1953,6 +2039,40 @@ export async function startScene({ canvas, kbd, reduced }) {
   });
   store.on("mode", (m) => { if (m === "demo") { slate.forced = false; if (slate.kind === "notice" || slate.kind === "link") closeSlate(); notice = ""; syncSky(); drawSummary(); drawPanel(); updateFrame(); } });
   store.on("demoOut", ({ agentId, company, label }) => sendDrone(agentId, company, label, new Promise((r) => setTimeout(r, 1500))));
+  // Intro match-cut hooks: colour grade, forward drift and HUD fade-in.
+  const intro = { grade: null, drift: null, hud: store.introPending ? { t0: -1 } : null };
+  if (store.introPending) svgFrame.setHudAlpha(0);
+  store.on("introGrade", (g) => { intro.grade = { ...g, t0: performance.now() }; kick(); });
+  store.on("introDrift", (d) => { intro.drift = { ...d, t0: performance.now() }; kick(); });
+  store.on("introHud", (h) => { intro.hud = h ? { t0: performance.now() } : { t0: -1 }; kick(); });
+  function updateIntro(now, dt) {
+    const g = intro.grade;
+    if (g) {
+      // Hold the video's look at the cut, then ease to ours over g.ease ms.
+      const k = g.hold != null && now - g.t0 < g.hold ? 0 : Math.min(1, (now - g.t0 - (g.hold ?? 0)) / g.ease);
+      const e = k * k * (3 - 2 * k);
+      world.background.setRGB(g.bg[0] * (1 - e), g.bg[1] * (1 - e), g.bg[2] * (1 - e));
+      starfield.setTint(...g.tint.map((c) => c + (1 - c) * e));
+      renderer.toneMappingExposure = g.exposure + (1.5 - g.exposure) * e;
+      activeUntil = Math.max(activeUntil, now + 100);
+      if (k >= 1) intro.grade = null;
+    }
+    const d = intro.drift;
+    if (d) {
+      // Continue the video's forward camera motion, easing out.
+      const k = Math.min(1, (now - d.t0) / d.dur), speed = d.rate * (1 - k) * (1 - k);
+      rig.dist *= 1 - speed * dt; rig.goal.dist = rig.dist;
+      activeUntil = Math.max(activeUntil, now + 100);
+      if (k >= 1) intro.drift = null;
+    }
+    const h = intro.hud;
+    let kpi = 1, corners = 1, strip = 1;
+    if (h) {
+      if (h.t0 < 0) { kpi = corners = strip = 0; }
+      else { const t = now - h.t0; kpi = Math.min(1, t / 300); corners = Math.min(1, Math.max(0, (t - 150) / 300)); strip = Math.min(1, Math.max(0, (t - 300) / 300)); if (t > 700) intro.hud = null; activeUntil = Math.max(activeUntil, now + 100); }
+    }
+    sumPlate.mat.uniforms.uOpacity.value = kpi; panelPlate.mat.uniforms.uOpacity.value = strip; svgFrame.setHudAlpha(corners);
+  }
   store.on("listview", (show) => { paused = show; if (!show) { dirty = true; kick(); } });
   function openNotice() { notice = "Waiting for the board…"; openSlate("notice"); }
 
@@ -2034,6 +2154,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         : hit?.plate === feedPlate ? { kind: "feed", y: e.clientY, x: e.clientX, s0: feed.scroll }
         : e.clientX > W - 22 && !feed.open ? { kind: "edge", x: e.clientX } : { kind: "rotate" };
       if (e.clientX < 56 && e.clientY < 56) cornerTimer = setTimeout(() => { gesture = null; toggleList(true); }, 650);
+      else if (!hit) { const pk = pickWorld(e.clientX, e.clientY, "company"); if (pk?.kind === "company") longPressMoon = setTimeout(() => { gesture = null; pointers.clear(); planetMenu(pk.id); }, 650); }
       if (hit?.plate === panelPlate) wakePanel();
     } else if (pointers.size === 2) {
       clearTimeout(cornerTimer); clearTimeout(longPressMoon);
@@ -2090,7 +2211,10 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (hit.spot?.fn === "panel:refresh") { blip(880); try { await act("refresh"); } catch (err) { notice = err.message; } return; }
       if (hit.spot?.fn === "panel:interval") { blip(520); const cur = store.board?.intervalSec ?? 15; const nx = INTERVALS.find((v) => v > cur) ?? INTERVALS[0]; try { await act("config", { intervalSec: nx }); } catch (err) { notice = err.message; } drawPanel(); return; }
       if (hit.spot?.fn === "panel:view") { blip(600); if (view.level === "sky") { const first = [...companyObjs.keys()][0]; if (first) goCompany(first); } else if (view.level === "company") toggleList(true); else goSky(); drawPanel(); return; }
-      if (hit.spot?.fn === "panel:sound") { panel.sound = !panel.sound; blip(740); drawPanel(); return; }
+      if (hit.spot?.fn === "panel:sound") { snd.startAudio(); snd.setMuted(!snd.soundState().muted); snd.play("click"); drawPanel(); return; }
+      if (hit.spot?.fn === "panel:vol") { snd.startAudio(); const v = snd.soundState().volume; snd.setVolume(VOLS[(VOLS.findIndex((x) => x >= v - 0.01) + 1) % VOLS.length]); snd.play("click"); drawPanel(); return; }
+      if (hit.spot?.fn === "panel:project") { store.emit("openConnect"); return; }
+      if (hit.spot?.fn === "panel:help") { store.emit("openHelp"); return; }
       if (hit.spot?.fn === "panel:pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
       if (typeof hit.spot?.fn === "function") { hit.spot.fn(); return; }
       if (hit.plate === slate.plate) return; // tap on the glass with nothing there
@@ -2165,6 +2289,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   document.addEventListener("visibilitychange", resume);
   addEventListener("focus", resume);
   addEventListener("pointerdown", resume, true);
+  addEventListener("pointerdown", () => { if (!snd.soundState().started) { snd.startAudio(); snd.ambienceIn(3); } }, { capture: true, once: true });
   addEventListener("keydown", resume, true);
 
   function frame(now) {
@@ -2227,6 +2352,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
 
     // Sky.
+    updateIntro(now, dt);
     starfield.update(clock, warpAmt, reduced ? 0 : 1, camera.position);
     debris.update(dt);
     nebula2.position.copy(camera.position); // farthest layer: no parallax
@@ -2277,6 +2403,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     updateUfos(dt, clock);
     updatePersistent(dt);
+    updateProjects(dt);
     updateFlights(dt);
     updateHostiles(dt);
     if (persist.size && !reduced) activeUntil = Math.max(activeUntil, now + 100);

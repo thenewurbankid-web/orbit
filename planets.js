@@ -47,6 +47,12 @@ float height(vec3 d) {
     float h = fbm(p * 0.9) * 0.8 + ridged(p * 3.5) * 0.18;
     return h;
   }
+  if (uKind == 4) { // ice world: smooth sheets cut by ridged cracks
+    return fbm(p * 1.1) * 0.5 + (1.0 - ridged(p * 4.0)) * 0.12 + craters(d, 6.0, 0.25) * 0.03;
+  }
+  if (uKind == 5) { // gas giant: no relief
+    return 0.5;
+  }
   // moon
   return fbm(p * 1.4) * 0.35 + craters(d, 5.0, 0.6) * 0.12 + craters(d, 13.0, 0.55) * 0.05 + craters(d, 31.0, 0.5) * 0.02;
 }
@@ -82,6 +88,20 @@ void main() {
       c = mix(c, vec3(0.36, 0.42, 0.28), smoothstep(0.5, 0.7, fbm(d * 4.0)) * 0.5);
     }
     c = mix(c, vec3(0.95, 0.96, 0.97), smoothstep(0.86, 0.95, lat));
+  } else if (uKind == 4) {
+    // Palette shifts with the seed: blue-white, grey-white or faintly green ice.
+    vec3 a = mix(vec3(0.62, 0.72, 0.80), vec3(0.66, 0.74, 0.70), fract(uSeed * 0.37));
+    c = mix(a * 0.75, a, smoothstep(0.3, 0.7, h));
+    c = mix(c, vec3(0.30, 0.40, 0.48), smoothstep(0.82, 0.95, ridged(d * 5.6 + uSeed)) * 0.6);   // cracks
+  } else if (uKind == 5) {
+    // Gas giant: soft latitude bands with turbulence; palette from the seed.
+    float hue = fract(uSeed * 0.61);
+    vec3 b0 = mix(vec3(0.72, 0.58, 0.42), vec3(0.50, 0.60, 0.70), step(0.5, hue));
+    vec3 b1 = mix(vec3(0.55, 0.40, 0.30), vec3(0.34, 0.42, 0.55), step(0.5, hue));
+    float turb = fbm(vec3(d.x * 3.0, d.y * 1.0, d.z * 3.0) + uSeed) * 0.35;
+    float band = sin(d.y * 22.0 + turb * 6.0) * 0.5 + 0.5;
+    c = mix(b1, b0, band);
+    c = mix(c, vec3(0.80, 0.70, 0.60), smoothstep(0.72, 0.9, fbm(d * 7.0 + uSeed * 3.0)) * 0.25);
   } else {
     c = mix(vec3(0.36, 0.36, 0.37), vec3(0.7, 0.7, 0.7), smoothstep(0.2, 0.6, h));
   }
@@ -139,7 +159,7 @@ function bake(renderer, frag, uniforms, w, h, mip = true) {
   return rt.texture;
 }
 
-export const KIND = { desert: 0, rocky: 1, ocean: 2, moon: 3 };
+export const KIND = { desert: 0, rocky: 1, ocean: 2, moon: 3, ice: 4, gas: 5 };
 
 // Returns {map, normalMap, clouds?}; size is the texture width (height = size/2).
 export function bakePlanet(renderer, kind, seed, size) {

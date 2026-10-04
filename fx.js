@@ -73,7 +73,7 @@ export function psfTexture(size = 128, spikes = true) {
 // ---------------- starfield (three parallax shells) ----------------
 const starVert = `
 attribute float aSize; attribute vec3 aColor; attribute float aPhase;
-uniform float uTime; uniform float uPixelRatio; uniform float uTwinkle; uniform float uWarp; uniform float uBright;
+uniform float uTime; uniform float uPixelRatio; uniform float uTwinkle; uniform float uWarp; uniform float uBright; uniform vec3 uTint;
 varying vec3 vColor; varying float vSpike;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -84,7 +84,7 @@ void main() {
   vSpike = 0.0;
   gl_PointSize = clamp((0.9 + min(aSize, 2.0) * 0.55) * uPixelRatio * (1.0 + uWarp * 0.6), 1.0, 4.0 * uPixelRatio);
   // White, crisp, kept under the bloom threshold so stars never glow.
-  vColor = aColor * tw * min(0.88, 0.32 + min(aSize, 2.0) * 0.26) * uBright;
+  vColor = aColor * tw * min(0.88, 0.32 + min(aSize, 2.0) * 0.26) * uBright * uTint;
 }`;
 const starFrag = `
 varying vec3 vColor; varying float vSpike;
@@ -127,7 +127,7 @@ export function createStarfield(tier, pixelRatio) {
     g.setAttribute("aPhase", new THREE.BufferAttribute(phase, 1));
     const m = new THREE.ShaderMaterial({
       vertexShader: starVert, fragmentShader: starFrag,
-      uniforms: { uTime: { value: 0 }, uPixelRatio: { value: pixelRatio }, uTwinkle: { value: 1 }, uWarp: { value: 0 }, uBright: { value: s.b ?? 1 } },
+      uniforms: { uTime: { value: 0 }, uPixelRatio: { value: pixelRatio }, uTwinkle: { value: 1 }, uWarp: { value: 0 }, uBright: { value: s.b ?? 1 }, uTint: { value: new THREE.Vector3(1, 1, 1) } },
       blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
     });
     mats.push(m);
@@ -138,6 +138,7 @@ export function createStarfield(tier, pixelRatio) {
   }
   return {
     group,
+    setTint(r, g, b) { for (const m of mats) m.uniforms.uTint.value.set(r, g, b); },
     update(t, warp, twinkle, camPos) {
       for (const m of mats) { m.uniforms.uTime.value = t; m.uniforms.uWarp.value = warp; m.uniforms.uTwinkle.value = twinkle; }
       // Parallax: nearer shells follow the camera a little less.

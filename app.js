@@ -24,13 +24,24 @@ export const store = {
   emit(ev, data) { for (const fn of listeners[ev] || []) try { fn(data); } catch (e) { console.error(e); } },
 };
 
-function setBoard(b) {
+// Which projects to show (chosen at entry). null = all tracked projects.
+store.selection = null;
+function applySelection(b) {
+  if (!b || !store.selection || store.mode === "demo") return b;
+  const keep = new Set(store.selection);
+  const companies = b.companies.filter((c) => keep.has(c.id));
+  const prefixes = new Set(companies.map((c) => c.prefix));
+  return { ...b, companies, agents: (b.agents ?? []).filter((a) => prefixes.has(a.company)), alerts: (b.alerts ?? []).filter((a) => !a.company || prefixes.has(a.company)) };
+}
+function setBoard(b0) {
+  store.rawBoard = b0;
+  const b = applySelection(b0);
   const prev = store.board;
   store.board = b;
   store.countdownAt = Date.now() + (b.nextPollInSec ?? b.intervalSec ?? 15) * 1000;
   if (b.agents) store.agents = b.agents;
   store.emit("board", { prev, next: b });
-  relay({ type: "board", data: b });
+  relay({ type: "board", data: b0 });
 }
 function setLog(entries) { store.log = entries; store.emit("log"); }
 function addLog(entry) { store.log = [entry, ...store.log].slice(0, 500); store.emit("logEntry", entry); }
@@ -41,11 +52,12 @@ function upsertMsg(m) {
   store.emit("msg", { msg: m, isNew });
 }
 function setChat(snap) {
-  store.agents = snap.agents ?? store.agents;
+  const pre = store.selection && store.mode !== "demo" && store.board ? new Set(store.board.companies.map((c) => c.prefix)) : null;
+  store.agents = (snap.agents ?? store.agents).filter((x) => !pre || pre.has(x.company));
   store.messages = new Map((snap.messages ?? []).map((m) => [m.id, m]));
   store.emit("chat");
 }
-function setAgents(a) { const prev = store.agents; store.agents = a; store.emit("agents", { prev, next: a }); }
+function setAgents(a0) { const pre = store.selection && store.mode !== "demo" ? new Set((store.board?.companies ?? []).map((c) => c.prefix)) : null; const a = pre ? a0.filter((x) => pre.has(x.company)) : a0; const prev = store.agents; store.agents = a; store.emit("agents", { prev, next: a }); }
 
 // ---------------- host transport ----------------
 let key = "";
@@ -90,6 +102,9 @@ const hostActions = {
   async comment(p) { return http("api/answer", { method: "POST", body: JSON.stringify({ issueId: p.issueId, action: "comment", text: p.text }) }); },
   async eta(p) { const q = p.issue ? `issue=${encodeURIComponent(p.issue)}` : `company=${encodeURIComponent(p.company)}`; const r = await http(`api/eta?${q}`, { method: "POST" }); watchEta(); return r; },
   async refresh() { const b = await http("api/refresh", { method: "POST" }); setBoard(b); return { ok: true }; },
+  async available(p) { return http("api/available-companies" + (p.url ? `?url=${encodeURIComponent(p.url)}` : "")); },
+  async companies(p) { const r = await http("api/companies", { method: "POST", body: JSON.stringify(p) }); await hostLoad(); return r; },
+  async ack(p) { const r = await http("api/alerts/ack", { method: "POST", body: JSON.stringify({ id: p.id }) }); await hostLoad(); return r; },
   async helper(p) { return http("api/helper/brief", { method: "POST", body: JSON.stringify({ interaction: p.interaction }) }); },
   async helperAsk(p) { return http("api/helper/ask", { method: "POST", body: JSON.stringify({ interaction: p.interaction, text: p.text }) }); },
   async config(p) { const r = await http("api/config", { method: "POST", body: JSON.stringify({ intervalSec: p.intervalSec }) }); await hostLoad(); return r; },
@@ -176,7 +191,7 @@ export async function startPairing() {
   dc.onmessage = (ev) => unframe(ev.data, async (m) => {
     if (m.type !== "req") return;
     // The phone may only ask for these; the server checks the details again.
-    const allowed = { answer: 1, comment: 1, eta: 1, refresh: 1, config: 1, helper: 1, helperAsk: 1 };
+    const allowed = { answer: 1, comment: 1, eta: 1, refresh: 1, config: 1, helper: 1, helperAsk: 1, available: 1, companies: 1, ack: 1 };
     try {
       if (!allowed[m.action]) throw new Error("not allowed");
       const result = await hostActions[m.action](m.payload ?? {});
@@ -613,8 +628,28 @@ function projectCheck() {
   const b = store.board;
   if (store.mode !== "host" || !b) return { found: false, names: [], reason: store.link.error || "The board server did not answer." };
   if (!b.companies?.length) return { found: false, names: [], reason: b.error ? `Paperclip did not answer (${b.error}).` : "Paperclip has none of the watched companies." };
-  return { found: true, names: b.companies.map((c) => c.name) };
+  return { found: true, names: b.companies.map((c) => c.name), projects: b.companies.map((c) => ({ id: c.id, name: c.name, prefix: c.prefix, open: c.issues.filter((i) => OPEN.includes(i.status)).length })) };
 }
+// The connect panel talks to the server directly on the Mac and through the Mac on the phone.
+export async function boardHttp(path, opts = {}) {
+  if (store.mode === "remote") {
+    if (path.startsWith("api/available-companies")) return act("available", { url: new URLSearchParams(path.split("?")[1] ?? "").get("url") });
+    if (path === "api/companies") return act("companies", JSON.parse(opts.body));
+  }
+  return http(path, opts);
+}
+export async function openConnectPanel(done) {
+  const ui = await import("./ui.js");
+  ui.openConnect({ http: boardHttp, onAdded: (c) => {
+    if (c && store.selection) store.selection = [...store.selection, c.id];
+    store.emit("projectAdded", c);
+    if (store.mode === "host") hostLoad();
+    done?.(c ? { id: c.id, name: c.name, prefix: c.prefix, open: null } : null);
+  } });
+}
+export async function openHelpPanel() { (await import("./ui.js")).openHelp(); }
+function lastSelection() { try { const v = localStorage.getItem("lastSelection"); return v === "demo" ? "demo" : v ? JSON.parse(v) : null; } catch { return null; } }
+function saveSelection(pick) { try { localStorage.setItem("lastSelection", pick.demo ? "demo" : JSON.stringify(pick.ids)); } catch {} }
 
 async function boot() {
   const offer = new URLSearchParams(location.hash.slice(1)).get("o");
@@ -644,10 +679,19 @@ async function boot() {
         onRetry: retryConnect,
         linkView: () => ({ ...store.link, offer: Boolean(offer) }),
         onLink: (cb) => store.on("link", cb),
-        phoneProjects: () => ({ names: (store.board?.companies ?? []).map((c) => c.name) }),
+        phoneProjects: () => ({ projects: (store.board?.companies ?? []).map((c) => ({ id: c.id, name: c.name, prefix: c.prefix, open: c.issues.filter((i) => OPEN.includes(i.status)).length })) }),
+        connect: (done) => openConnectPanel(done),
+        help: () => openHelpPanel(),
+        lastSelection: () => { const l = lastSelection(); return l === "demo" ? null : l; },
+        saveSelection,
+        select: (ids) => { store.selection = ids; if (store.board) { const raw = store.rawBoard ?? store.board; setBoard(raw); } },
         copy: copyText,
         onDemo: () => startDemo(),
+        frame: () => store.frameApi,
+        emit: (ev, d) => store.emit(ev, d),
+        sound: async (name) => { const snd = await import("./sound.js"); if (name === "press") { snd.startAudio(); snd.play("press"); snd.play("door"); } else snd.play(name); },
       });
+      store.introPending = true;
     }
   } catch (e) { console.error("intro", e); $("sky").style.opacity = "1"; }
   try {
