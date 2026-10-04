@@ -26,8 +26,10 @@ const hash = (s) => { let h = 2166136261; for (const ch of String(s)) h = Math.i
 export async function startScene({ canvas, kbd, reduced }) {
   const look = { x: 0, y: 0, tx: 0, ty: 0 }; // parallax input (mouse or tilt)
   const forceRender = new URLSearchParams(location.search).has("forcerender"); // testing only: keep rendering in a hidden tab
-  const isHidden = () => document.hidden && !forceRender;
-  const raf = (f) => (forceRender && document.hidden ? setTimeout(() => f(performance.now()), 33) : requestAnimationFrame(f));
+  // The loop never waits for input. rAF does not fire in hidden documents (and some embedded panes
+  // report hidden while on screen), so a hidden page falls back to a slow timer instead of stopping.
+  const isHidden = () => false;
+  const raf = (f) => (document.hidden ? setTimeout(() => f(performance.now()), forceRender ? 33 : 250) : requestAnimationFrame(f));
   let dirty = true, paused = false, rafId = 0, last = performance.now(), clock = 0, activeUntil = performance.now() + 3000, lastRender = 0;
   // ---------------- renderer, tier, passes ----------------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", alpha: false });
@@ -208,7 +210,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       items.push({ a, plate, w, h, op, cx: (_lp.x * 0.5 + 0.5) * W, cy: (-_lp.y * 0.5 + 0.5) * H, pr: labelPriority(a) });
     }
     items.sort((p, q) => q.pr - p.pr);
-    const placed = [];
+    const placed = bracketPlate.visible && bracketPlate.readoutRect ? [bracketPlate.readoutRect] : [];
     const hits = (r) => placed.some((q) => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
     for (const it of items) {
       // Clamp into the inner rectangle: near an edge the label shifts back inside (flips to the inner side).
@@ -1445,6 +1447,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     bracketPlate.mesh.position.set(sx - size / 2 + pw / 2, -(sy - ph / 2 + ph / 2), 0);
     bracketPlate.rect.x = sx - size / 2; bracketPlate.rect.y = sy - ph / 2;
+    bracketPlate.readoutRect = { x: sx + size / 2 + 8, y: sy - 18, w: 210, h: 36 }; // labels keep clear of this
     if (!bracketPlate.visible) bracketPlate.show(true);
   }
 
@@ -2044,9 +2047,13 @@ export async function startScene({ canvas, kbd, reduced }) {
   window.__observatory = perf;
   if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
-  document.addEventListener("visibilitychange", () => { if (isHidden()) { cancelAnimationFrame(rafId); rafId = 0; } else { last = performance.now(); kick(); } });
+  document.addEventListener("visibilitychange", () => { cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; if (!paused) rafId = raf(frame); });
 
   function frame(now) {
+    try { frameBody(now); } catch (e) { console.error("[observatory] frame", e); }
+    if (!rafId && !paused) rafId = raf(frame);
+  }
+  function frameBody(now) {
     rafId = 0;
     if (paused || isHidden()) return;
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -2124,7 +2131,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       ao.moon.material.emissiveIntensity = a.live ? 0.12 * flare : a.queued ? 0.04 : 0;
       ao.glow.material.opacity = a.live ? 0.12 * flare : 0;
       ao.glow.scale.setScalar(ao.size * 2.4);
-      const show = lvl === "sky" ? (hoverId === ao.id ? 0.8 : 0) : ao.company === view.company ? 0.95 : 0.25;
+      const show = lvl !== "sky" && ao.company === view.company ? 0.95 : 0;
       ao.label.material.opacity += (show - ao.label.material.opacity) * 0.15;
       ao.orbitLine.material.opacity = ao.company === view.company ? 0.45 : 0.22;
     }
@@ -2203,7 +2210,7 @@ export async function startScene({ canvas, kbd, reduced }) {
 
     // Render: full rate while something moves; a low idle rate keeps the stars alive.
     const active = now < activeUntil || running.length > 0 || particles.alive > 0 || floaters.length > 0 || pointers.size > 0 || Math.abs(rig.goal.dist - rig.dist) > 0.05 || rig.target.distanceTo(rig.goal.target) > 0.02 || [...ufos.values()].some((u) => u.state !== "hover") || !!loneUfo || film.uniforms.uPulse.value >= 0 || slate.editing || now < slate.animUntil || (slate.plate.visible && sinceOpen < 1);
-    const idleGap = reduced ? Infinity : 1000 / tier.fpsIdle;
+    const idleGap = 100; // at least ~10 fps when idle
     if (active || dirty || now - lastRender >= idleGap) {
       const t0 = performance.now();
       composer.render(dt);
@@ -2218,8 +2225,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       }
       lastRender = now;
     }
-    if (active || !reduced) rafId = raf(frame);
-    else if (dirty) rafId = raf(frame);
+    rafId = raf(frame);
   }
 
   // Idle repaint for the countdown ring and live data even with reduced motion.
