@@ -1085,12 +1085,19 @@ export async function startScene({ canvas, kbd, reduced }) {
   const kpiPrev = new Map(); const kpiFlash = new Map();
   const panel = { bright: 0 };
   const VOLS = [0.2, 0.4, 0.6, 0.8, 1];
-  // KPI taps: fly to the first matching issue in board order (its satellite, or its planet if it has none).
-  function goFirstIssue(test) {
-    for (const c of store.board?.companies ?? []) {
-      const i = c.issues.find(test);
-      if (i) { if (issueObjs.has(i.id)) goIssue(i.id); else if (companyObjs.has(c.prefix)) goCompany(c.prefix); return; }
-    }
+  // KPI taps: the first tap flies to the first matching issue (board order); tapping the same number
+  // again steps to the next one, wrapping around, with a "2 / 4" readout.
+  const kpiCycle = { k: null, n: 0, at: 0 };
+  const kpiTapOk = () => { const now = performance.now(); if (now - (kpiTapOk.last ?? 0) < 350) return false; kpiTapOk.last = now; return true; };
+  function goFirstIssue(test, k = "?", label = "") {
+    if (!kpiTapOk()) return;
+    const list = (store.board?.companies ?? []).flatMap((c) => c.issues.filter(test).map((i) => ({ i, c })));
+    if (!list.length) { readout(`• Nothing ${label || "to show"}`, "0"); return; }
+    const again = kpiCycle.k === k && performance.now() - kpiCycle.at < 120000;
+    kpiCycle.n = again ? (kpiCycle.n + 1) % list.length : 0; kpiCycle.k = k; kpiCycle.at = performance.now();
+    const { i, c } = list[kpiCycle.n];
+    if (issueObjs.has(i.id)) goIssue(i.id); else if (companyObjs.has(c.prefix)) goCompany(c.prefix);
+    readout(`${label ? label + " · " : ""}${kpiCycle.n + 1} / ${list.length} · ${i.identifier}`, "0", i.id);
   }
   function kpis() {
     const s = summary();
@@ -1101,11 +1108,11 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (const c of store.board?.companies ?? []) { const p = companyProgress(c); if (p != null) { const n = c.issues.filter((i) => OPEN.includes(i.status)).length; sw += n; sp += n * p; } }
     const overall = sw ? Math.round(sp / sw) + "%" : "–";
     const all = [
-      { k: "work", v: agentsWorking, label: "agents working", tap: () => { const a = store.agents.find((x) => x.live); if (a) goAgent(a.id); } },
-      { k: "prog", v: s.inProgress, label: "in progress", tap: () => goFirstIssue((i) => i.status === "in_progress") },
-      { k: "block", v: s.blocked, label: "blocked", tap: () => goFirstIssue((i) => i.status === "blocked") },
-      { k: "wait", v: s.waiting, label: "waiting on you", amber: s.waiting > 0, tap: () => { const q = allQuestions()[0]; if (q) goIssue(q.issue.id); } },
-      { k: "done", v: doneToday, label: "done today", tap: () => goFirstIssue((i) => i.status === "done" && i.completedAt && new Date(i.completedAt).toDateString() === today) },
+      { k: "work", v: agentsWorking, label: "agents working", tap: () => { const live = store.agents.filter((x) => x.live); if (!live.length || !kpiTapOk()) return; const again = kpiCycle.k === "work" && performance.now() - kpiCycle.at < 120000; kpiCycle.n = again ? (kpiCycle.n + 1) % live.length : 0; kpiCycle.k = "work"; kpiCycle.at = performance.now(); goAgent(live[kpiCycle.n].id); readout(`working · ${kpiCycle.n + 1} / ${live.length} · ${live[kpiCycle.n].name}`, "0"); } },
+      { k: "prog", v: s.inProgress, label: "in progress", tap: () => goFirstIssue((i) => i.status === "in_progress", "prog", "in progress") },
+      { k: "block", v: s.blocked, label: "blocked", tap: () => goFirstIssue((i) => i.status === "blocked", "block", "blocked") },
+      { k: "wait", v: s.waiting, label: "waiting on you", amber: s.waiting > 0, tap: () => { const qs = allQuestions(); if (!qs.length || !kpiTapOk()) return; const again = kpiCycle.k === "wait" && performance.now() - kpiCycle.at < 120000; kpiCycle.n = again ? (kpiCycle.n + 1) % qs.length : 0; kpiCycle.k = "wait"; kpiCycle.at = performance.now(); const q = qs[kpiCycle.n]; goIssue(q.issue.id); readout(`waiting on you · ${kpiCycle.n + 1} / ${qs.length} · ${q.issue.identifier}`, "0", q.issue.id); } },
+      { k: "done", v: doneToday, label: "done today", tap: () => goFirstIssue((i) => i.status === "done" && i.completedAt && new Date(i.completedAt).toDateString() === today, "done", "done today") },
       { k: "pct", v: overall, label: "overall · rough estimate", tap: () => goSky() },
     ];
     if (W >= 1100) return all;

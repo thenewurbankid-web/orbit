@@ -4,11 +4,11 @@ import { frameMetrics } from "./frame.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
-const FLASH = { x: 0.5, y: 0.293 }; // where the warp flash sits in the video frame (424, 140 of 848x478)
+const FLASH = { x: 0.6, y: 0.37 }; // zoom target: the ringed planet in the steady window shot (~8.8 s)
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.2; // the camera tilt has settled and the warp flash is just starting; the video's planets come after ~7.3 s
+const CUT_T = 8.8; // the warp has ended and the camera is steady on the window full of planets
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -373,7 +373,7 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    // Hold on the settled frame, then zoom precisely into the warp flash while our light grows from
+    // Hold on the steady window shot, then zoom precisely into the ringed planet while light grows from
     // that exact point; at full light we swap to our scene, which appears as the light fades.
     video.pause();
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
