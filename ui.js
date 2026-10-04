@@ -4,7 +4,7 @@
 
 const css = `
 :root { --ease-out: cubic-bezier(.16,1,.3,1); --ease-in: cubic-bezier(.4,0,1,1); }
-.frost { position: fixed; z-index: 30; color: #dfe9ef; font: 13px/1.55 "JetBrains Mono", ui-monospace, Menlo, monospace;
+.frost { position: fixed; z-index: 30; max-height: calc(100% - 48px); overflow-y: auto; box-sizing: border-box; color: #dfe9ef; font: 13px/1.55 "JetBrains Mono", ui-monospace, Menlo, monospace;
   background: rgba(10,12,16,.45); -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
   border: 1px solid rgba(255,255,255,.1); border-top-color: rgba(235,242,248,.45); border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0,0,0,.45); overflow: hidden;

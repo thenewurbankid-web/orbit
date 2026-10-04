@@ -47,7 +47,7 @@ export function runIntro(opts) {
       .intro .hot:focus-visible { outline: 2px solid #bfe9ff; outline-offset: 4px; }
       .intro .hint { position: absolute; font-size: 11px; letter-spacing: .12em; color: rgba(200,236,250,.8); white-space: nowrap; transform: translate(-50%, 60px); pointer-events: none; }
       .intro .skip { position: absolute; right: 18px; bottom: 16px; font: inherit; font-size: 11px; letter-spacing: .1em; color: rgba(200,210,220,.55); background: none; border: 0; padding: 8px; cursor: pointer; }
-      .intro .panel { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); width: min(460px, calc(100% - 32px)); background: rgba(3,5,7,.72); border: 1px solid rgba(255,255,255,.1); border-top-color: rgba(235,242,248,.45); padding: 16px 18px; font-size: 12px; line-height: 1.6; opacity: 0; transition: opacity .3s; }
+      .intro .panel { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 32px)); background: rgba(3,5,7,.72); border: 1px solid rgba(255,255,255,.1); border-top-color: rgba(235,242,248,.45); padding: 16px 18px; font-size: 12px; line-height: 1.6; opacity: 0; transition: opacity .3s; }
       .intro .panel.on { opacity: 1; }
       .intro .panel h2 { font-size: 11px; font-weight: 400; letter-spacing: .14em; color: rgba(160,225,255,.85); margin: 0 0 6px; }
       .intro .panel p { margin: 0 0 8px; color: #b8c4cc; }
@@ -92,7 +92,7 @@ export function runIntro(opts) {
   let sel = null;
   function selPanel() {
     if (sel) return sel;
-    sel = frostPanel("", { width: 480, closeOnOutside: false, bottom: "8%" });
+    sel = frostPanel("", { width: 480, closeOnOutside: false });
     sel.el.style.zIndex = "31";
     return sel;
   }
