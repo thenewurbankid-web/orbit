@@ -30,15 +30,9 @@ export async function startScene({ canvas, kbd, reduced }) {
   const forceRender = new URLSearchParams(location.search).has("forcerender"); // testing only: keep rendering in a hidden tab
   // The loop never waits for input. rAF does not fire in hidden documents (and some embedded panes
   // report hidden while on screen), so a hidden page falls back to a slow timer instead of stopping.
-  // Pause only in a genuinely hidden background tab: hidden AND unfocused for more than 5 s.
-  // (The Claude Browser pane reports hidden while on screen, but keeps focus/input.)
-  let hiddenSince = document.hidden && !document.hasFocus() ? performance.now() : 0;
-  const isHidden = () => {
-    if (forceRender || !document.hidden || document.hasFocus()) { hiddenSince = 0; return false; }
-    if (!hiddenSince) hiddenSince = performance.now();
-    return performance.now() - hiddenSince > 5000;
-  };
-  const raf = (f) => (document.hidden ? setTimeout(() => f(performance.now()), forceRender ? 33 : 250) : requestAnimationFrame(f));
+  // Never fully stop: while the page reports hidden, draw slowly (about 1.5 fps) instead of pausing.
+  const isHidden = () => false;
+  const raf = (f) => (document.hidden ? setTimeout(() => f(performance.now()), forceRender ? 33 : 667) : requestAnimationFrame(f));
   let dirty = true, paused = false, rafId = 0, last = performance.now(), clock = 0, activeUntil = performance.now() + 3000, lastRender = 0;
   // ---------------- renderer, tier, passes ----------------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", alpha: false });
@@ -2167,11 +2161,11 @@ export async function startScene({ canvas, kbd, reduced }) {
   window.__observatory = perf;
   if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
-  const resume = () => { hiddenSince = 0; if (paused) return; cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
+  const resume = () => { if (paused) return; cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
   document.addEventListener("visibilitychange", resume);
   addEventListener("focus", resume);
-  addEventListener("pointerdown", () => { if (!rafId) resume(); }, true);
-  addEventListener("keydown", () => { if (!rafId) resume(); }, true);
+  addEventListener("pointerdown", resume, true);
+  addEventListener("keydown", resume, true);
 
   function frame(now) {
     if (isHidden()) { rafId = 0; return; } // paused until visibility, focus or input
