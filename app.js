@@ -107,6 +107,7 @@ const hostActions = {
   async ack(p) { const r = await http("api/alerts/ack", { method: "POST", body: JSON.stringify({ id: p.id }) }); await hostLoad(); return r; },
   async helper(p) { return http("api/helper/brief", { method: "POST", body: JSON.stringify({ interaction: p.interaction }) }); },
   async helperAsk(p) { return http("api/helper/ask", { method: "POST", body: JSON.stringify({ interaction: p.interaction, text: p.text }) }); },
+  async projectWork(p) { const r = await http("api/project-work", { method: "POST", body: JSON.stringify(p) }); await hostLoad(); return r; },
   async config(p) { const r = await http("api/config", { method: "POST", body: JSON.stringify({ intervalSec: p.intervalSec }) }); await hostLoad(); return r; },
 };
 let etaWatch = null;

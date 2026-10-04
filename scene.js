@@ -1158,6 +1158,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       ...(store.mode === "host" || store.mode === "remote" ? [{ id: "pair", label: pairState === "connected" ? (narrow ? "linked" : "phone linked") : store.mode === "remote" ? "link" : narrow ? "pair" : "pair phone", on: pairState === "connected" }] : []),
       { id: "sound", label: snd.soundState().muted ? (narrow ? "muted" : "sound off") : (narrow ? "snd" : "sound on"), on: !snd.soundState().muted },
       { id: "vol", label: `vol ${Math.round(snd.soundState().volume * 100)}%` },
+      ...(view.level !== "sky" && view.company && store.mode !== "demo" ? [(() => { const c = (store.board?.companies ?? []).find((x) => x.prefix === view.company); return { id: "work", label: c?.paused ? (narrow ? "▶" : "▶ start work") : (narrow ? "■" : "■ stop work") }; })()] : []),
       { id: "project", label: narrow ? "+" : "+ project" },
       { id: "help", label: "?" },
     ];
@@ -1770,6 +1771,27 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   // ---------------- projects: connect, disconnect, re-roll ----------------
+  // Start / stop all work on one project (pauses or resumes its Paperclip agents).
+  async function openWorkPanel(prefix) {
+    const ui = await import("./ui.js");
+    const c = (store.board?.companies ?? []).find((x) => x.prefix === prefix); if (!c) return;
+    const action = c.paused ? "start" : "stop";
+    let plan = null;
+    try { plan = (await act("projectWork", { companyId: c.id, action, dryRun: true })).plan; } catch (e) { readout(`▼ ${e.message}`, "0"); return; }
+    const what = action === "stop"
+      ? `Pauses ${plan.pause.length} agent${plan.pause.length === 1 ? "" : "s"}${plan.cancel.length ? ` and cancels ${plan.cancel.length} running job${plan.cancel.length === 1 ? "" : "s"}` : ""}. Nothing else in Paperclip changes, and you can start it again here.`
+      : `Resumes ${plan.resume.length || "its"} agent${plan.resume.length === 1 ? "" : "s"} and wakes them so they pick up their work.`;
+    const p = ui.frostPanel(`<h2>${action === "stop" ? "STOP" : "START"} WORK · ${c.name.toUpperCase()}</h2><p>${what}</p><div class="btns"><button class="go">${action === "stop" ? "STOP WORK" : "START WORK"}</button><button class="dim no">CANCEL</button></div><p class="err" style="color:#ff9a8a"></p>`, { width: 460 });
+    p.el.querySelector(".no").onclick = () => p.close();
+    p.el.querySelector(".go").onclick = async () => {
+      try {
+        const r = await act("projectWork", { companyId: c.id, action });
+        readout(action === "stop" ? `■ Work stopped · ${c.name}` : `▶ Work started · ${c.name}`, "0");
+        if (r.errors?.length) readout(`▼ ${r.errors.length} step(s) failed · ${c.name}`, "0");
+        p.close(); wakePanel();
+      } catch (e2) { p.el.querySelector(".err").textContent = e2.message; }
+    };
+  }
   store.on("openConnect", () => openConnectPanel());
   store.on("openHelp", () => openHelpPanel());
   async function planetMenu(prefix) {
@@ -2235,6 +2257,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (hit.spot?.fn === "panel:sound") { snd.startAudio(); snd.setMuted(!snd.soundState().muted); snd.play("click"); drawPanel(); return; }
       if (hit.spot?.fn === "panel:vol") { snd.startAudio(); const v = snd.soundState().volume; snd.setVolume(VOLS[(VOLS.findIndex((x) => x >= v - 0.01) + 1) % VOLS.length]); snd.play("click"); drawPanel(); return; }
       if (hit.spot?.fn === "panel:project") { store.emit("openConnect"); return; }
+      if (hit.spot?.fn === "panel:work") { openWorkPanel(view.company); return; }
       if (hit.spot?.fn === "panel:help") { store.emit("openHelp"); return; }
       if (hit.spot?.fn === "panel:pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
       if (typeof hit.spot?.fn === "function") { hit.spot.fn(); return; }
