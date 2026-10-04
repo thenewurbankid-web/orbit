@@ -204,7 +204,7 @@ export function runIntro(opts) {
   if (!document.getElementById("orbit-title-css")) {
     const st = document.createElement("style"); st.id = "orbit-title-css";
     st.textContent = `
-      .orbit-title { font: 200 clamp(88px, 15vw, 190px)/1 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .38em; padding-left: .38em; color: #fff; white-space: nowrap;
+      .orbit-title { font: 200 clamp(40px, 13.5vw, 190px)/1 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .38em; padding-left: .38em; color: #fff; white-space: nowrap;
         text-shadow: 0 0 8px rgba(255,255,255,.9), 0 0 26px rgba(200,235,255,.6), 0 0 60px rgba(150,210,255,.35); animation: orbit-glow 7s cubic-bezier(.45,0,.55,1) 2.2s infinite alternate; }
       .orbit-title span { display: inline-block; opacity: 0; filter: blur(14px); transform: translateY(18px) scale(1.15);
         animation: orbit-in 1.1s cubic-bezier(.22,1,.36,1) forwards; animation-delay: calc(.25s + var(--i) * .14s); }
