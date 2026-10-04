@@ -78,6 +78,14 @@ export function runIntro(opts) {
       .orbit-help-start { display: flex; justify-content: center; margin-top: 26px; }
       .orbit-help-start button { width: min(320px, 80vw); height: 52px; border-radius: 12px; border: 1px solid rgba(160,235,255,.55); background: rgba(255,255,255,.035); color: #e6f7fc; letter-spacing: .36em; font-size: 15px; cursor: pointer; box-shadow: 0 0 10px rgba(120,220,255,.22); }
       .orbit-help-start button:hover { border-color: rgba(190,242,255,.8); box-shadow: 0 0 16px rgba(120,220,255,.35); }
+      /* Calm buttons: no moving border, no hover theatrics. Hover only brightens the edge and fill a little. */
+      .orbit-btns button::before, .orbit-btns button::after { content: none !important; display: none !important; }
+      .orbit-btns button, .orbit-btns.settled button.primary { animation: none !important; }
+      .orbit-btns button { transition: border-color .25s, background-color .25s, color .25s !important; }
+      .orbit-btns button:hover, .orbit-btns button:focus-visible { transform: none !important; letter-spacing: .36em !important;
+        border-color: rgba(200,244,255,.75) !important; background: rgba(255,255,255,.07) !important; box-shadow: 0 0 10px rgba(120,220,255,.22), inset 0 0 10px rgba(120,220,255,.08) !important; }
+      .orbit-btns button:active { transform: none !important; background: rgba(255,255,255,.1) !important; }
+      .orbit-btns .ripple { display: none !important; }
       @media (prefers-reduced-motion: reduce) { .intro .hot { animation: none; opacity: .9; } }
     </style>
     <video muted playsinline preload="metadata" poster="assets/intro-poster.jpg"></video>
