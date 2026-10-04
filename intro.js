@@ -152,15 +152,50 @@ export function runIntro(opts) {
   // Title menu before the door: START reveals the door button, HELP explains the app.
   let title = null, nameEl = null;
   function showTitle() {
+  if (!document.getElementById("orbit-title-css")) {
+    const st = document.createElement("style"); st.id = "orbit-title-css";
+    st.textContent = `
+      .orbit-title { font: 200 clamp(88px, 15vw, 190px)/1 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .38em; padding-left: .38em; color: #fff; white-space: nowrap;
+        text-shadow: 0 0 8px rgba(255,255,255,.9), 0 0 26px rgba(200,235,255,.6), 0 0 60px rgba(150,210,255,.35); animation: orbit-glow 3.2s ease-in-out 2.2s infinite; }
+      .orbit-title span { display: inline-block; opacity: 0; filter: blur(14px); transform: translateY(18px) scale(1.15);
+        animation: orbit-in 1.1s cubic-bezier(.22,1,.36,1) forwards; animation-delay: calc(.25s + var(--i) * .14s); }
+      .orbit-btns { opacity: 0; transform: translateY(10px); animation: orbit-up .7s cubic-bezier(.22,1,.36,1) 1.35s forwards; }
+      @keyframes orbit-in { 60% { opacity: 1; } to { opacity: 1; filter: blur(0); transform: none; } }
+      @keyframes orbit-up { to { opacity: 1; transform: none; } }
+      @keyframes orbit-glow { 50% { text-shadow: 0 0 10px rgba(255,255,255,1), 0 0 34px rgba(210,240,255,.75), 0 0 80px rgba(150,210,255,.45); } }
+      /* After settling: a slow light sweep through the letters on top of the glow pulse. */
+      .orbit-title span { background: linear-gradient(100deg, #fff 40%, #dff6ff 48%, #fff 56%) 0 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; }
+      .orbit-title.settled span { animation: orbit-sheen 6s ease-in-out infinite; animation-delay: calc(var(--i) * .12s); opacity: 1; filter: none; transform: none; }
+      @keyframes orbit-sheen { 0%, 70% { background-position: 100% 0; } 85% { background-position: 0 0; } 100% { background-position: 0 0; } }
+      /* Fluidic buttons: a slow liquid glow drifting inside; on hover a liquid wave rises to fill the button. */
+      .orbit-btns button { position: relative; overflow: hidden; isolation: isolate; border: 0 !important; border-radius: 16px !important; color: #eaf8ff !important;
+        background: rgba(12,20,28,.35) !important; box-shadow: inset 0 0 0 1px rgba(170,228,255,.38), 0 0 0 0 rgba(120,200,240,0); transition: box-shadow .4s, letter-spacing .4s; }
+      .orbit-btns button > * , .orbit-btns button { z-index: 1; }
+      .orbit-btns button::before { content: ""; position: absolute; inset: -40%; z-index: -1; filter: blur(14px); opacity: .55;
+        background: radial-gradient(35% 45% at 30% 50%, rgba(110,200,255,.45), transparent 70%), radial-gradient(30% 40% at 70% 55%, rgba(90,255,210,.28), transparent 70%);
+        animation: orbit-liquid 7s ease-in-out infinite alternate; }
+      .orbit-btns button::after { content: ""; position: absolute; left: -25%; width: 150%; aspect-ratio: 1; top: 135%; z-index: -1; border-radius: 42%;
+        background: rgba(140,215,255,.22); transition: top .9s cubic-bezier(.22,1,.36,1); animation: orbit-wave 6s linear infinite; }
+      .orbit-btns button:hover, .orbit-btns button:focus-visible { letter-spacing: .38em !important; outline: none;
+        box-shadow: inset 0 0 0 1px rgba(200,240,255,.8), 0 0 26px rgba(120,200,240,.28); }
+      .orbit-btns button:hover::after, .orbit-btns button:focus-visible::after { top: 18%; }
+      @keyframes orbit-liquid { 0% { transform: translate(-6%, -4%) rotate(0deg); } 50% { transform: translate(8%, 5%) rotate(25deg); } 100% { transform: translate(-4%, 6%) rotate(-15deg); } }
+      @keyframes orbit-wave { to { transform: rotate(360deg); } }
+      .orbit-btns.settled button.primary { animation: orbit-breathe 3.2s ease-in-out infinite; }
+      @keyframes orbit-breathe { 50% { box-shadow: inset 0 0 0 1px rgba(190,235,255,.75), 0 0 20px rgba(120,200,240,.2); } }
+      @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after { animation: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
+    document.head.appendChild(st);
+  }
     hot.style.display = hint.style.display = "none";
     const btn = 'style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em"';
     title = frostPanel(`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:40px">
-      <div style="font:200 72px/1 'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:.42em;padding-left:.42em;color:#fff;white-space:nowrap;text-shadow:0 0 6px rgba(255,255,255,.9),0 0 18px rgba(200,235,255,.65),0 0 42px rgba(150,210,255,.4)">ORBIT</div>
-      <div style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}>START</button><button data-a="help" ${btn}>HELP</button></div></div>`,
+      <div class="orbit-title"><span style="--i:0">O</span><span style="--i:1">R</span><span style="--i:2">B</span><span style="--i:3">I</span><span style="--i:4">T</span></div>
+      <div class="orbit-btns" style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}>START</button><button data-a="help" ${btn}>HELP</button></div></div>`,
       { width: 10000, closeOnOutside: false });
     // Full-screen frosted card over the door.
     Object.assign(title.el.style, { left: "0", top: "0", width: "100%", height: "100%", maxHeight: "none", transform: "none", borderRadius: "0", border: "0", padding: "24px", boxSizing: "border-box" });
     requestAnimationFrame(() => { if (title) title.el.style.transform = "none"; }); // frostPanel re-centres on its first frame
+    setTimeout(() => { title?.el.querySelector(".orbit-title")?.classList.add("settled"); title?.el.querySelector(".orbit-btns")?.classList.add("settled"); }, 2300);
     title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
     title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
   }
