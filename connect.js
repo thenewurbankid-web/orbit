@@ -213,7 +213,21 @@ function advancedHtml(os) {
   return `<details><summary>Advanced: one line in ${os === "windows" ? "PowerShell" : "a terminal"} instead</summary>
     <div class="line"><code>${esc(line)}</code><button type="button" class="cp" data-line="${esc(line)}">COPY</button></div><p>${how}</p></details>`;
 }
+// macOS (15+) blocks unsigned downloaded launchers until "Open Anyway" in System Settings; a curl install is
+// not quarantined, so on Mac the one line is the main path and the download is the alternative.
+function macLineHtml(safari) {
+  const line = ONE_LINER.mac, d = DOWNLOADS.mac;
+  return `<p><b>1.</b> Open Terminal: press <kbd>⌘</kbd> <kbd>Space</kbd>, type <b>Terminal</b>, press <kbd>Return</kbd>.</p>
+    <p><b>2.</b> Copy this line, paste it into Terminal and press <kbd>Return</kbd>:</p>
+    <div class="line"><code>${esc(line)}</code><button type="button" class="cp" data-line="${esc(line)}">COPY</button></div>
+    <p>It sets Orbit up (no password needed) and opens this page again. ${safari ? "" : "This page notices by itself."}</p>
+    <details><summary>Prefer a download?</summary>
+      <p><a class="btn dl" href="${SITE}download/${d.file}" download>DOWNLOAD ORBIT FOR MAC</a></p>
+      <p>Open <b>Orbit-mac.zip</b>, double-click <b>Start Orbit</b>. Your Mac will block it the first time: press <b>Done</b>, open
+      <b>System Settings → Privacy &amp; Security</b>, scroll down, press <b>Open Anyway</b> and enter your password.</p></details>`;
+}
 function getOrbitHtml(os, safari) {
+  if (os === "mac") return macLineHtml(safari);
   const d = DOWNLOADS[os];
   const others = Object.entries(DOWNLOADS).filter(([k]) => k !== os).map(([, v]) => `<a href="${SITE}download/${v.file}">${v.label}</a>`).join(" · ");
   if (!d) {
