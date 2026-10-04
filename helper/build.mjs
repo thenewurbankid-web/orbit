@@ -54,7 +54,10 @@ function stage(os) {
 
 mkdirSync("download", { recursive: true });
 const out = { mac: "download/Orbit-mac.zip", win: "download/Orbit-windows.zip", linux: "download/Orbit-linux.tar.gz" };
-for (const [os, file] of Object.entries(out)) {
+// --ref pins the installers to the archives already committed, so it must not rebuild them (zip and tar
+// embed timestamps, so a rebuild never matches HEAD).
+const pinOnly = process.argv.includes("--ref");
+for (const [os, file] of pinOnly ? [] : Object.entries(out)) {
   const { dir, name } = stage(os);
   rmSync(file, { force: true });
   if (file.endsWith(".zip")) execFileSync("zip", ["-qrX", join(root, file), name], { cwd: dir });
@@ -66,8 +69,8 @@ for (const [os, file] of Object.entries(out)) {
   rmSync(dir, { recursive: true, force: true });
 }
 const sums = Object.fromEntries(Object.entries(out).map(([os, f]) => [os, sha(f)]));
-writeFileSync("download/SHA256SUMS", Object.values(out).map((f) => `${sha(f)}  ${f.slice("download/".length)}`).join("\n") + "\n");
-writeFileSync("helper/latest.json", JSON.stringify({ version: VERSION, files: Object.fromEntries(FILES.map((f) => [f, sha(join("helper", f))])), downloads: Object.fromEntries(Object.entries(out).map(([os, f]) => [f.slice(9), sums[os]])) }, null, 2) + "\n");
+if (!pinOnly) writeFileSync("download/SHA256SUMS", Object.values(out).map((f) => `${sha(f)}  ${f.slice("download/".length)}`).join("\n") + "\n");
+if (!pinOnly) writeFileSync("helper/latest.json", JSON.stringify({ version: VERSION, files: Object.fromEntries(FILES.map((f) => [f, sha(join("helper", f))])), downloads: Object.fromEntries(Object.entries(out).map(([os, f]) => [f.slice(9), sums[os]])) }, null, 2) + "\n");
 
 let ref = "";
 if (process.argv.includes("--ref")) {
