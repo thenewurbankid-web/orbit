@@ -144,7 +144,8 @@ export function runIntro(opts) {
     started = true;
     opts.sound?.("press");
     hot.style.display = hint.style.display = "none";
-    video.play().catch(() => { stalled = true; });
+    video.muted = false; video.volume = 0.9;
+    video.play().catch(() => { video.muted = true; video.play().catch(() => { stalled = true; }); });
     // Some hosts pause video in documents they report as hidden; then we skip the wait for the window shot.
     setTimeout(() => { if (video.currentTime < 0.3) stalled = true; }, 1500);
     check();
@@ -159,7 +160,6 @@ export function runIntro(opts) {
     panel.classList.remove("on");
     sel?.close();
     if (chosen === "demo") opts.onDemo();
-    opts.sound?.("enter");
     goToCut();
   }
   // Reach the cut frame: fast-forward smoothly if it is ahead, then cut.
@@ -172,7 +172,7 @@ export function runIntro(opts) {
       return;
     }
     if (video.currentTime >= CUT_T) { video.currentTime = CUT_T; video.addEventListener("seeked", () => transition(), { once: true }); return; }
-    video.playbackRate = 3.5;
+    video.playbackRate = 3.5; video.muted = true;
     const tick = () => {
       if (finished) return;
       if (video.currentTime >= CUT_T - 0.03) { video.pause(); video.playbackRate = 1; transition(); return; }
@@ -184,7 +184,10 @@ export function runIntro(opts) {
   }
   video.addEventListener("ended", () => { if (!chosen) video.pause(); });
   // Without a choice the video stops on the cut frame and waits there.
-  video.addEventListener("timeupdate", () => { if (!chosen && video.currentTime >= CUT_T) { video.pause(); video.currentTime = CUT_T; } });
+  video.addEventListener("timeupdate", () => {
+    if (!chosen && !video.muted && video.currentTime >= CUT_T - 0.8) video.volume = Math.max(0, 0.9 * (CUT_T - video.currentTime) / 0.8);
+    if (!chosen && video.currentTime >= CUT_T) { video.pause(); video.currentTime = CUT_T; }
+  });
 
   // Sample the cut frame's colours: black level and star tint, to match our scene's grade.
   function sampleGrade() {
@@ -209,10 +212,15 @@ export function runIntro(opts) {
   // above the opaque scene and only its own opacity changes.
   const MOVE = 900, XF0 = 450, XF1 = 1050;
   let tr = null;
+  function fadeOutVideo() {
+    const v0 = video.volume, t0 = performance.now();
+    const f = () => { const k = Math.min(1, (performance.now() - t0) / 700); video.volume = v0 * (1 - k); if (k < 1) setTimeout(f, 30); else video.pause(); };
+    if (video.muted || video.paused) video.pause(); else f();
+  }
   function transition() {
     if (finished) return;
     finished = true;
-    video.pause();
+    fadeOutVideo();
     const W = innerWidth, H = innerHeight, m = frameMetrics(W, H);
     const from = { x0: rect.left + WIN_PX.x0 / VW * rect.w, y0: rect.top + WIN_PX.y0 / VH * rect.h, x1: rect.left + WIN_PX.x1 / VW * rect.w, y1: rect.top + WIN_PX.y1 / VH * rect.h };
     const to = { x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1 };
@@ -249,6 +257,7 @@ export function runIntro(opts) {
     video.style.opacity = String(t < XF0 ? 1 : Math.max(0, 1 - (t - XF0) / (XF1 - XF0)));
   }
   function finish() {
+    opts.sound?.("enter"); // our ship sound starts only once the video is over
     const { frame, W, H } = tr;
     root.remove(); removeEventListener("resize", place);
     frame?.setOpening(null, W, H); frame?.setOpacity(1); frame?.setZ(2);

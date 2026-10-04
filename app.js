@@ -689,7 +689,7 @@ async function boot() {
         onDemo: () => startDemo(),
         frame: () => store.frameApi,
         emit: (ev, d) => store.emit(ev, d),
-        sound: async (name) => { const snd = await import("./sound.js"); if (name === "press") { snd.startAudio(); snd.play("press"); snd.play("door"); } else snd.play(name); },
+        sound: async (name) => { const snd = await import("./sound.js"); if (name === "press") snd.startAudio(); /* unlock only: the intro video plays its own soundtrack */ else snd.play(name); },
       });
       store.introPending = true;
     }
