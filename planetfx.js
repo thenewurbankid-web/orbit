@@ -48,12 +48,15 @@ export function storm(center, radius, dir, reduced) {
   };
 }
 
-export function attack(center, radius, getTarget, reduced) {
+export function attack(center, radius, getTarget, reduced, rfx = null) {
   const g = new THREE.Group();
   const craftGeo = new THREE.ConeGeometry(0.09, 0.32, 5); craftGeo.rotateX(Math.PI / 2);
   const craft = [0, 1, 2].map((k) => {
     const c = new THREE.Mesh(craftGeo, new THREE.MeshStandardMaterial({ color: 0x1a1a1a, metalness: 0.6, roughness: 0.4, emissive: AMBER, emissiveIntensity: 0.35 }));
-    c.userData.phase = (k / 3) * Math.PI * 2; g.add(c); return c;
+    c.userData.phase = (k / 3) * Math.PI * 2; g.add(c);
+    // Real craft (New Horizons render, amber-graded) over the drawn cone once the image is in.
+    if (rfx) { const w = new THREE.Group(); c.add(w); rfx.dress(w, "hostile", { size: 0.55, dim: 0.7, warm: 0.5, hide: [c] }); }
+    return c;
   });
   const tracerMat = new THREE.LineBasicMaterial({ color: AMBER.clone().multiplyScalar(2.2), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
   const tracer = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), tracerMat);
@@ -74,7 +77,12 @@ export function attack(center, radius, getTarget, reduced) {
       if (retreat) { rt += dt; craft.forEach((c) => (c.material.emissiveIntensity = 0.35 + Math.max(0, 1 - rt * 3) * 3)); if (rt > 1.2) { retreat(); return false; } return true; }
       if (!reduced) {
         fire -= dt;
-        if (fire <= 0 && target) { fire = 1.4 + Math.random() * 1.6; shot = { from: craft[Math.floor(Math.random() * 3)].position.clone(), to: target.clone(), k: 0 }; }
+        if (fire <= 0 && target) {
+          fire = 1.4 + Math.random() * 1.6;
+          const from = craft[Math.floor(Math.random() * 3)].position.clone();
+          if (rfx?.bolt(from, target.clone(), { color: new THREE.Color(1.0, 0.55, 0.2), width: 0.04, dur: 0.55 })) shot = null;
+          else shot = { from, to: target.clone(), k: 0 };
+        }
         if (shot) {
           shot.k += dt / 0.35;
           const a = shot.from.clone().lerp(shot.to, Math.min(1, shot.k)), b = shot.from.clone().lerp(shot.to, Math.max(0, shot.k - 0.25));
@@ -128,9 +136,22 @@ export function aurora(center, radius) {
   return { obj: g, dur: 3.2, update(k, dt, t) { rings.forEach((r, i) => { r.material.opacity = Math.sin(Math.PI * k) * (0.9 - i * 0.2) * (0.75 + 0.25 * Math.sin(t * 6 + i)); r.scale.setScalar(1 + k * 0.08); }); } };
 }
 
-export function beacon(center, radius, dir, camera) {
+export function beacon(center, radius, dir, camera, rfx = null) {
   const g = new THREE.Group();
   const at = surfacePoint(center, radius, dir);
+  if (rfx?.ready("laser") && rfx.ready("glint")) {
+    // Real light: a teal-white beam (laser-photo profile) rising from the surface and a lens glint at its foot.
+    const b = rfx.beam(TEAL.clone().lerp(WHITE, 0.35), 0.06);
+    const foot = rfx.glint("glint", TEAL.clone().lerp(WHITE, 0.5), radius * 0.35, 0); foot.position.copy(at);
+    g.add(b, foot);
+    return { obj: g, dur: 3.2, update(k, dt, t) {
+      const rise = Math.min(1, k / 0.25), e = 1 - Math.pow(1 - rise, 3);
+      b.userData.set(at, at.clone().addScaledVector(dir, 0.2 + e * radius * 1.6), 0.05);
+      const fade = (k < 0.08 ? k / 0.08 : 1) * (1 - THREE.MathUtils.smoothstep(k, 0.7, 1));
+      b.material.uniforms.uOpacity.value = fade * 0.9; b.material.uniforms.uTime.value = t * 0.1;
+      foot.material.uniforms.uOpacity.value = fade * (0.6 + 0.4 * Math.max(0, 1 - k * 4)) * 1.1;
+    } };
+  }
   const tower = add(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.04, 0.6, 6), new THREE.MeshBasicMaterial({ color: WHITE.clone().multiplyScalar(1.4) })));
   tower.position.copy(at.clone().addScaledVector(dir, 0.3)); tower.lookAt(at.clone().addScaledVector(dir, 2)); tower.rotateX(Math.PI / 2);
   const ring = add(new THREE.Mesh(new THREE.RingGeometry(0.2, 0.24, 48), new THREE.MeshBasicMaterial({ color: TEAL.clone().multiplyScalar(1.5), side: THREE.DoubleSide })));
@@ -142,10 +163,12 @@ export function beacon(center, radius, dir, camera) {
   } };
 }
 
-export function supply(getMoon, moonR) {
+export function supply(getMoon, moonR, rfx = null) {
   const ship = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.22), new THREE.MeshStandardMaterial({ color: 0x777b80, metalness: 0.8, roughness: 0.3, emissive: TEAL, emissiveIntensity: 0.3 }));
+  if (rfx) { const w = new THREE.Group(); ship.add(w); rfx.dress(w, "pod", { size: 0.38, engineColor: TEAL.clone().lerp(WHITE, 0.5), hide: [ship] }); }
   const pulse = add(new THREE.Mesh(new THREE.SphereGeometry(1, 16, 8), new THREE.MeshBasicMaterial({ color: TEAL.clone().multiplyScalar(1.3), opacity: 0 })));
   const g = new THREE.Group(); g.add(ship, pulse);
+  let docked = false;
   const from = new THREE.Vector3(6, 3, 4);
   return { obj: g, dur: 2.6, update(k) {
     const m = getMoon();
@@ -153,13 +176,21 @@ export function supply(getMoon, moonR) {
     ship.position.copy(m).add(from.clone().multiplyScalar(1 - ee)).add(new THREE.Vector3(0, moonR + 0.15, 0).multiplyScalar(ee));
     ship.lookAt(m);
     pulse.position.copy(m); const pk = Math.max(0, (k - 0.7) / 0.3);
-    pulse.scale.setScalar(moonR * (1 + pk * 1.5)); pulse.material.opacity = pk > 0 ? (1 - pk) * 0.35 : 0;
+    if (rfx?.ready("glint")) { // docking: a soft real glint at the moon instead of an expanding sphere
+      pulse.visible = false;
+      if (pk > 0 && !docked) { docked = true; rfx.flash(m.clone().add(new THREE.Vector3(0, moonR + 0.15, 0)), { size: moonR * 2.2, color: TEAL.clone().lerp(WHITE, 0.4), dur: 0.9 }); }
+    } else { pulse.scale.setScalar(moonR * (1 + pk * 1.5)); pulse.material.opacity = pk > 0 ? (1 - pk) * 0.35 : 0; }
     ship.visible = k < 0.95;
   } };
 }
 
-export function clearSky(center, radius, dir) {
+export function clearSky(center, radius, dir, rfx = null) {
   const at = surfacePoint(center, radius, dir, 0.05);
+  if (rfx?.ready("flare")) {
+    // Sunlight breaking through: a real star-glare photo, warm white, swelling and fading (no flat disc).
+    const m = rfx.glint("flare", new THREE.Color(1, 0.96, 0.88), radius * 0.9, 0); m.position.copy(at);
+    return { obj: m, dur: 2.0, update(k) { m.material.uniforms.uOpacity.value = Math.sin(Math.PI * Math.min(1, k * 1.1)) * 0.75; m.scale.setScalar(0.6 + k * 0.5); } };
+  }
   const m = add(new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.97, 0.9).multiplyScalar(1.5) })));
   orientOutward(m, center, at);
   return { obj: m, dur: 1.4, update(k) { m.material.opacity = Math.sin(Math.PI * k) * 0.45; m.scale.setScalar(0.4 + k * 0.8); } };
@@ -178,8 +209,9 @@ export function cityLights(center, radius, sun, count) {
   return { obj: m, dur: 3.2, update(k, dt, t) { m.material.opacity = Math.sin(Math.PI * k) * (0.8 + 0.2 * Math.sin(t * 20)); } };
 }
 
-export function impacts(center, radius, sun) {
+export function impacts(center, radius, sun, rfx = null) {
   const g = new THREE.Group();
+  const real = !!rfx?.ready("explosion");
   const hits = [0, 1, 2].map((i) => {
     const d = new THREE.Vector3().randomDirection().lerp(sun, 0.5).normalize();
     const at = surfacePoint(center, radius, d, 0.01);
@@ -187,14 +219,15 @@ export function impacts(center, radius, sun) {
     const crater = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.06, 24), new THREE.MeshBasicMaterial({ color: 0x050505, transparent: true, opacity: 0, depthWrite: false }));
     orientOutward(flash, center, at); orientOutward(crater, center, surfacePoint(center, radius, d, 0.005));
     g.add(flash, crater);
-    return { flash, crater, t0: i * 0.18 };
+    if (real) flash.visible = false; // the real fireball replaces the flat flash disc
+    return { flash, crater, at: surfacePoint(center, radius, d, radius * 0.04), t0: i * 0.35, hit: false };
   });
   return { obj: g, dur: 6, update(k) {
     const s = k * 6;
     for (const h of hits) {
       const lt = s - h.t0;
-      h.flash.material.opacity = lt > 0 && lt < 0.5 ? 1 - lt / 0.5 : 0;
-      h.flash.scale.setScalar(1 + Math.max(0, lt) * 2);
+      if (real) { if (lt > 0 && !h.hit) { h.hit = true; rfx.boom(h.at, { size: radius * 0.2, dur: 1.7 }); } }
+      else { h.flash.material.opacity = lt > 0 && lt < 0.4 ? (1 - lt / 0.4) * 0.6 : 0; h.flash.scale.setScalar(1 + Math.max(0, lt) * 0.6); }
       h.crater.material.opacity = lt > 0.1 ? Math.max(0, 0.85 - (lt - 0.1) / 6) : 0;
     }
   } };

@@ -49,6 +49,10 @@ export function shouldSkipIntro() {
 //         onEnter(), onDemo(), onRetry(): Promise, copy(text), canvas, reduced, onLink(cb) }
 export function runIntro(opts) {
   const { canvas, reduced } = opts;
+  // The white-out flare is real imagery (assets/fx, see CREDITS.md): a Hubble star halo, a Webb star-burst and an
+  // anamorphic lens streak. Preloaded now so they are decoded by the cut; the drawn gradients remain the fallback.
+  const smallFx = Math.min(innerWidth, innerHeight) < 640;
+  const flareImgs = Object.fromEntries(["flare", "glint", "streak"].map((n) => { const im = new Image(); im.decoding = "async"; im.src = `assets/fx/${n}${smallFx ? "-sm" : ""}.jpg`; return [n, im]; }));
   const root = document.createElement("div");
   root.className = "intro";
   root.innerHTML = `
@@ -464,6 +468,18 @@ export function runIntro(opts) {
     const px = POINT[0][1], py = POINT[0][2], D = Math.hypot(W, H);
     const sx0 = rect.left + bx + px * rect.w, sy0 = rect.top + by + py * rect.h; // the star on screen before the move
     let t0 = 0;
+    // Real flare layers, screen-blended over the frozen frame (black in the photos adds nothing).
+    const real = !reduced && Object.values(flareImgs).every((im) => im.complete && im.naturalWidth > 0);
+    let parts = null;
+    if (real) {
+      star.style.mixBlendMode = "screen";
+      const part = (n, extra = {}) => { const im = flareImgs[n].cloneNode(); Object.assign(im.style, { position: "absolute", left: "0", top: "0", width: "1px", height: "1px", mixBlendMode: "screen", transformOrigin: "50% 50%", maxWidth: "none", ...extra }); star.appendChild(im); return im; };
+      parts = { halo: part("flare"), fringe: part("flare", { filter: "hue-rotate(150deg) saturate(1.6)", opacity: "0.22" }), burst: part("glint"), streak: part("streak") };
+    }
+    const place = (im, x, y, w, h, rot = 0, op = 1) => {
+      im.style.width = w.toFixed(1) + "px"; im.style.height = h.toFixed(1) + "px"; // real size, so the photo is never upscaled from a tiny raster
+      im.style.transform = `translate(${(x - w / 2).toFixed(1)}px, ${(y - h / 2).toFixed(1)}px) rotate(${rot.toFixed(2)}deg)`; im.style.opacity = String(op.toFixed(3));
+    };
     const step = () => {
       const k = ZOOM ? Math.min(1, (performance.now() - t0) / ZOOM) : 1;
       const e = k * k * (3 - 2 * k), z = 1 + 3.2 * k * k * k;    // pan eases in and out; the push accelerates
@@ -472,13 +488,29 @@ export function runIntro(opts) {
       // The star: a hard white core with a soft blue halo and a thin horizontal lens streak, all growing.
       const g = Math.pow(k, 2.4), core = 1.5 + g * D * 0.35, halo = 10 + Math.pow(k, 1.6) * D * 0.7;
       const streak = 40 + Math.pow(k, 1.3) * W * 1.4, sh = 1 + g * 40;
-      star.style.background =
-        `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fff ${core.toFixed(1)}px, rgba(215,238,255,.8) ${(core + halo * 0.15).toFixed(1)}px, rgba(160,205,255,.35) ${(core + halo * 0.45).toFixed(1)}px, rgba(140,190,255,0) ${(core + halo).toFixed(1)}px),` +
-        `radial-gradient(${streak.toFixed(0)}px ${sh.toFixed(1)}px at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, rgba(235,246,255,.9), rgba(180,215,255,0))`;
+      if (parts) {
+        // A real star flaring in the lens: Hubble halo, Webb diffraction spikes, a blue anamorphic streak and a faint
+        // chromatic fringe, all growing; the frame itself overexposes (brighter, flatter, paler) like a camera
+        // pushed past its range, and the white bleeds out from the star until it fills the screen.
+        const hs = 70 + Math.pow(k, 1.5) * D * 1.5, bs = 46 + Math.pow(k, 1.35) * D * 0.95;
+        const sw = 120 + Math.pow(k, 1.2) * W * 2.2, shh = Math.max(6, sw / 24) * (1 + g * 1.5);
+        place(parts.halo, sx, sy, hs, hs, 45, 0.85); parts.halo.style.filter = `blur(${(hs * 0.012).toFixed(1)}px)`; // soft, like light scattered in the lens
+        place(parts.fringe, sx, sy, hs * 1.07, hs * 1.07, 45, 0.22); parts.fringe.style.filter = `hue-rotate(150deg) saturate(1.6) blur(${(hs * 0.016).toFixed(1)}px)`;
+        place(parts.burst, sx, sy, bs, bs, 4 + k * 6, 1);
+        place(parts.streak, sx, sy, sw, shh, 0, Math.min(0.85, 0.45 + k)); parts.streak.style.filter = `blur(${(1 + g * 6).toFixed(1)}px)`;
+        video.style.filter = `brightness(${(1 + g * 3).toFixed(3)}) contrast(${(1 - g * 0.45).toFixed(3)}) saturate(${(1 - g * 0.6).toFixed(3)})`;
+        const r0 = core * 0.6, r1 = core + halo * 0.5;
+        wash.style.background = `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fbfdff ${r0.toFixed(1)}px, rgba(240,248,255,${Math.min(1, 0.25 + k).toFixed(3)}) ${r1.toFixed(1)}px, rgba(236,246,255,${Math.pow(k, 1.5).toFixed(3)}) ${(r1 + D * 0.6).toFixed(1)}px)`;
+      } else {
+        star.style.background =
+          `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fff ${core.toFixed(1)}px, rgba(215,238,255,.8) ${(core + halo * 0.15).toFixed(1)}px, rgba(160,205,255,.35) ${(core + halo * 0.45).toFixed(1)}px, rgba(140,190,255,0) ${(core + halo).toFixed(1)}px),` +
+          `radial-gradient(${streak.toFixed(0)}px ${sh.toFixed(1)}px at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, rgba(235,246,255,.9), rgba(180,215,255,0))`;
+      }
       star.style.opacity = String(Math.min(1, k * 6).toFixed(3)); // lights up in the first moments
-      wash.style.opacity = String(Math.pow(Math.max(0, (k - 0.35) / 0.65), 2.2).toFixed(3));
+      wash.style.opacity = String((parts ? Math.pow(Math.max(0, (k - 0.2) / 0.8), 1.6) : Math.pow(Math.max(0, (k - 0.35) / 0.65), 2.2)).toFixed(3));
       if (k < 1) return requestAnimationFrame(step);
-      wash.style.opacity = "1"; star.remove();
+      wash.style.background = "#f4faff"; wash.style.opacity = "1"; star.remove(); // fully white at the cut
+      video.style.filter = "";
       setTimeout(swap, HOLD);
     };
     const swap = () => {

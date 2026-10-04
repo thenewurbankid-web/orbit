@@ -84,9 +84,11 @@ export function createFrame(host) {
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     const m = frameMetrics(W, H, override);
     const defs = el("defs", {}, svg);
-    // Fine brushed streaks at very low contrast.
-    const pat = el("pattern", { id: "obs-brush", width: 200, height: 2, patternUnits: "userSpaceOnUse" }, defs);
-    for (let i = 0; i < 7; i++) el("rect", { x: (i * 47) % 200, y: i % 2, width: 20 + (i * 31) % 60, height: 0.5, fill: "rgba(255,255,255,0.03)" }, pat);
+    // Real brushed, worn steel (ambientCG Metal011, CC0; see assets/fx/CREDITS.md), tiled and blended over the
+    // dark body so it keeps the frame's tone. Phones get the 256 px tile.
+    const T = m.phone ? 192 : 320;
+    const pat = el("pattern", { id: "obs-steel", width: T, height: T, patternUnits: "userSpaceOnUse" }, defs);
+    el("image", { href: `assets/fx/steel${m.phone ? "-sm" : ""}.jpg`, width: T, height: T, preserveAspectRatio: "none" }, pat);
     const lx = 0.5 - light[0] * 0.5, ly = 0.5 - light[1] * 0.5;
     // Clean metal: one lit side, one shadow side, few mid greys.
     const body = el("linearGradient", { id: "obs-body", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
@@ -105,12 +107,21 @@ export function createFrame(host) {
     const outer = `M-2 -2H${W + 2}V${H + 2}H-2Z` + `M${st.x} ${st.y}V${st.y + st.h}H${st.x + st.w}V${st.y}Z`;
     // 1. Gunmetal body.
     el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-body)", "fill-rule": "evenodd" }, svg);
-    el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-brush)", "fill-rule": "evenodd" }, svg);
+    el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.32, style: "mix-blend-mode:soft-light" }, svg);
+    // Bevel: a chamfer around the opening, each face shaded by its angle to the light like machined metal.
+    const bi = openingPts(m, lip), bo = openingPts(m, lip + metal * 0.42);
+    for (let i = 0; i < bi.length; i++) {
+      const j = (i + 1) % bi.length, a = bi[i], b = bi[j], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const nx = (b[1] - a[1]) / L, ny = -(b[0] - a[0]) / L, f = -(nx * light[0] + ny * light[1]);
+      const col = f > 0 ? `rgba(205,215,225,${(0.05 + f * 0.11).toFixed(3)})` : `rgba(0,0,0,${(0.18 + -f * 0.3).toFixed(3)})`;
+      el("path", { d: `M${a[0]} ${a[1]}L${b[0]} ${b[1]}L${bo[j][0]} ${bo[j][1]}L${bo[i][0]} ${bo[i][1]}Z`, fill: col }, svg);
+    }
     // Bevel step: a crisp 1 px dark groove where the body meets the lip, one step out.
     el("path", { d: P(openingPts(m, lip + metal * 0.45)), fill: "none", stroke: "rgba(0,0,0,0.55)", "stroke-width": 1 }, svg);
     el("path", { d: P(openingPts(m, lip + metal * 0.45 + 1)), fill: "none", stroke: "rgba(255,255,255,0.06)", "stroke-width": 1 }, svg);
     // 2. Brushed-steel lip.
     el("path", { d: P(openingPts(m, lip)) + P(openingPts(m, 0)), fill: "url(#obs-lip)", "fill-rule": "evenodd" }, svg);
+    el("path", { d: P(openingPts(m, lip)) + P(openingPts(m, 0)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.45, style: "mix-blend-mode:soft-light" }, svg);
     // 3. Edge line at the glass: bright on the lit side, dark on the far side, same 1 px weight everywhere.
     const pts = openingPts(m, 0.5);
     for (let i = 0; i < pts.length; i++) {
