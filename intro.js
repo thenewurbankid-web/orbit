@@ -4,10 +4,11 @@ import { frameMetrics } from "./frame.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
+const FLASH = { x: 0.5, y: 0.293 }; // where the warp flash sits in the video frame (424, 140 of 848x478)
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.1; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
+const CUT_T = 7.2; // the camera tilt has settled and the warp flash is just starting; the video's planets come after ~7.3 s
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -372,23 +373,23 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    // Let the window light up: the video keeps playing into its warp flash while our light grows from
-    // the same point and gently pushes in; at full white we swap to our scene, which appears as the
-    // light fades. The light hides the video's own planets as they start to appear.
+    // Hold on the settled frame, then zoom precisely into the warp flash while our light grows from
+    // that exact point; at full light we swap to our scene, which appears as the light fades.
+    video.pause();
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
     tr = { frame, W, H };
     canvas.style.transition = ""; canvas.style.opacity = "1";
-    const RISE = reduced ? 0 : 420, FALL = reduced ? 0 : 1500; // fast rise: the video's planets (from ~7.3 s) are covered within a few frames
+    const fx = rect.left + FLASH.x * rect.w, fy = rect.top + FLASH.y * rect.h; // flash on screen
+    const ZOOM = reduced ? 0 : 950, FALL = reduced ? 0 : 1500;
     const light = document.createElement("div");
     Object.assign(light.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
-      background: "radial-gradient(circle at 50% 30%, #ffffff 0%, #f4fbff 22%, rgba(220,240,255,.96) 45%, rgba(190,225,255,.9) 75%, rgba(170,210,245,.85) 100%)",
-      transform: "scale(.6)", transformOrigin: "50% 30%",
-      transition: `opacity ${RISE}ms cubic-bezier(.3,.55,.4,1), transform ${RISE}ms cubic-bezier(.33,0,.67,1)` });
+      background: `radial-gradient(circle at ${fx}px ${fy}px, #ffffff 0%, #f4fbff 14%, rgba(220,240,255,.97) 34%, rgba(195,228,255,.93) 62%, rgba(175,215,250,.9) 100%)`,
+      transition: `opacity ${ZOOM}ms cubic-bezier(.7,0,.84,0)` });
     document.body.appendChild(light);
-    video.style.transformOrigin = "50% 30%";
-    video.style.transition = `transform ${RISE}ms cubic-bezier(.33,0,.67,1)`;
-    requestAnimationFrame(() => { light.style.opacity = "1"; light.style.transform = "scale(1.4)"; video.style.transform = "scale(1.25)"; });
+    video.style.transformOrigin = `${FLASH.x * 100}% ${FLASH.y * 100}%`;
+    video.style.transition = `transform ${ZOOM}ms cubic-bezier(.55,0,.75,.2)`;
+    requestAnimationFrame(() => { video.style.transform = "scale(3.2)"; light.style.opacity = "1"; });
     setTimeout(() => {
       fadeOutVideo();
       video.style.opacity = "0";
@@ -402,7 +403,7 @@ export function runIntro(opts) {
       reduced ? frame?.setOpacity(1) : fadeFrame();
       setTimeout(() => light.remove(), FALL + 100);
       finish();
-    }, RISE + 40);
+    }, ZOOM + 40);
   }
   function finish() {
     opts.sound?.("enter"); // our ship sound starts only once the video is over
