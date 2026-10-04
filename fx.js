@@ -16,12 +16,15 @@ export function detectTier(renderer) {
   const weakGpu = /SwiftShader|llvmpipe|Software|Mali-4|Mali-T|Adreno \(TM\) [345]\d\d|PowerVR SGX|Intel\(R\) HD Graphics [2-5]/i.test(gpu);
   const mem = navigator.deviceMemory ?? 8;
   const cores = navigator.hardwareConcurrency ?? 8;
+  // High by default everywhere. Only a known-weak GPU (or a low-memory Android phone) steps down.
   let name = "high";
-  // Phones: iOS reports cores and memory unreliably, so only a known-weak GPU drops to "low".
-  if (mobile) name = weakGpu ? "low" : "medium";
-  else if (weakGpu || mem <= 4) name = "medium";
+  if (weakGpu) name = mobile ? "low" : "medium";
+  else if (mobile && /Android/i.test(ua) && navigator.deviceMemory && navigator.deviceMemory <= 3) name = "medium";
+  // A chosen tier wins: ?tier=high|medium|low (remembered), or the settings panel's saved choice.
   const forced = new URLSearchParams(location.search).get("tier");
-  if (["low", "medium", "high"].includes(forced)) name = forced;
+  let saved = null; try { saved = localStorage.getItem("orbit.tier"); } catch {}
+  if (["low", "medium", "high"].includes(forced)) { name = forced; try { localStorage.setItem("orbit.tier", forced); } catch {} }
+  else if (["low", "medium", "high"].includes(saved)) name = saved;
   const t = {
     high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 60 },
     medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 30 },
