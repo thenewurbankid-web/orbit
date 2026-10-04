@@ -301,7 +301,37 @@ export function runIntro(opts) {
     opts.sound?.("press"); // unlock audio on this gesture
     dissolve(title);
     title = null;
-    autoStart();
+    panToButton(autoStart);
+  }
+  // Portrait phones: the video is centred, so the door button sits off screen. Glide the video sideways to
+  // bring the button into view, light it up as if pressed, then glide back to centre and carry on.
+  function panToButton(then) {
+    const W = innerWidth, H = innerHeight;
+    const bx = rect.left + BUTTON.x * rect.w;
+    if (H <= W || reduced || (bx > 60 && bx < W - 60)) return then();
+    // Pan relative to the viewport centre: move the frame by the button's offset from centre (both axes),
+    // limited so the video always covers the screen.
+    const by0 = rect.top + BUTTON.y * rect.h;
+    const dx = Math.min(-rect.left, Math.max(W - (rect.left + rect.w), W / 2 - bx));
+    const dy = Math.min(-rect.top, Math.max(H - (rect.top + rect.h), H / 2 - by0)) * 0.6; // a lighter vertical move
+    const shift = dx, bxAt = bx + dx, by = by0 + dy;
+    video.style.transition = "transform 900ms cubic-bezier(.65,0,.35,1)";
+    video.style.transform = `translate(${dx}px, ${dy}px)`;
+    // a soft ring on the button once it arrives, then the press
+    const ring = document.createElement("div");
+    Object.assign(ring.style, { position: "fixed", left: bxAt + "px", top: by + "px", width: "64px", height: "64px", margin: "-32px 0 0 -32px", borderRadius: "50%",
+      border: "1.5px solid rgba(200,240,255,.9)", boxShadow: "0 0 18px rgba(120,210,255,.7)", opacity: "0", transform: "scale(.6)", zIndex: 30, pointerEvents: "none",
+      transition: "opacity 300ms ease, transform 500ms cubic-bezier(.22,1,.36,1)" });
+    document.body.appendChild(ring);
+    setTimeout(() => { ring.style.opacity = "1"; ring.style.transform = "scale(1)"; }, 850);
+    setTimeout(() => { ring.style.transform = "scale(.85)"; }, 1350); // the press
+    setTimeout(() => { ring.style.opacity = "0"; ring.style.transform = "scale(1.6)"; }, 1600);
+    setTimeout(() => {
+      video.style.transition = "transform 1400ms cubic-bezier(.65,0,.35,1)";
+      video.style.transform = "translate(0px, 0px)";
+      ring.remove();
+      then();
+    }, 1750);
   }
   // START on the title goes straight into the video with the remembered projects (or all of them).
   // If no projects are found, it stops at the door and shows how to connect one (or the demo).
