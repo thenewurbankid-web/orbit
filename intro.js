@@ -92,7 +92,7 @@ export function runIntro(opts) {
   let sel = null;
   function selPanel() {
     if (sel) return sel;
-    sel = frostPanel("", { width: 480, closeOnOutside: false });
+    sel = frostPanel("", { width: 640, closeOnOutside: false });
     sel.el.style.zIndex = "31";
     return sel;
   }
@@ -144,14 +144,32 @@ export function runIntro(opts) {
     started = true;
     opts.sound?.("press");
     hot.style.display = hint.style.display = "none";
-    video.muted = false; video.volume = 0.9;
-    video.play().catch(() => { video.muted = true; video.play().catch(() => { stalled = true; }); });
-    // Some hosts pause video in documents they report as hidden; then we skip the wait for the window shot.
-    setTimeout(() => { if (video.currentTime < 0.3) stalled = true; }, 1500);
+    // The door stays shut (video paused on its first frame) while the menu is up; it opens only
+    // after a project or the demo is chosen.
     check();
   }
   hot.onclick = press;
-  addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) press(); if (e.key === "Escape") choose(chosen ?? "skip", true); });
+  // Title menu before the door: START reveals the door button, HELP explains the app.
+  let title = null;
+  function showTitle() {
+    hot.style.display = hint.style.display = "none";
+    title = frostPanel(`<div style="text-align:center">
+      <h1 style="margin:6px 0 10px;font-weight:200;font-size:56px;letter-spacing:.42em;padding-left:.42em;color:#fff;text-shadow:0 0 6px rgba(255,255,255,.9),0 0 18px rgba(200,235,255,.65),0 0 42px rgba(150,210,255,.4)">ORBIT</h1>
+      <p style="opacity:.75;margin:0 0 6px;font-size:15px">A live view of your Paperclip AI companies.</p>
+      <div class="btns"><button class="primary" data-a="start">START</button><button data-a="help">HELP</button></div></div>`,
+      { width: 540, closeOnOutside: false });
+    title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
+    title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
+  }
+  function startDoor() {
+    if (!title) return;
+    opts.sound?.("press"); // unlock audio on this gesture
+    title.close();
+    title = null;
+    hot.style.display = hint.style.display = "";
+  }
+  showTitle();
+  addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
   skip.onclick = () => { if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
 
   function choose(kind, immediate = false) {
@@ -165,26 +183,28 @@ export function runIntro(opts) {
   // Reach the cut frame: fast-forward smoothly if it is ahead, then cut.
   function goToCut() {
     if (reduced) return transition();
-    if (stalled || video.paused && video.currentTime < 0.3) {
+    if (stalled) {
       // Playback blocked by the host: seek straight to the cut frame.
       video.addEventListener("seeked", () => transition(), { once: true });
       video.currentTime = CUT_T; setTimeout(transition, 900);
       return;
     }
     if (video.currentTime >= CUT_T) { video.currentTime = CUT_T; video.addEventListener("seeked", () => transition(), { once: true }); return; }
-    video.playbackRate = 3.5; video.muted = true;
+    video.playbackRate = 1; video.muted = false; video.volume = 0.9; // play the whole door sequence with its soundtrack
     const tick = () => {
       if (finished) return;
       if (video.currentTime >= CUT_T - 0.03) { video.pause(); video.playbackRate = 1; transition(); return; }
       requestAnimationFrame(tick);
     };
-    if (video.paused) video.play().catch(() => { stalled = true; goToCut(); });
+    if (video.paused) video.play().catch(() => { video.muted = true; video.play().catch(() => { stalled = true; goToCut(); }); });
     requestAnimationFrame(tick);
-    setTimeout(() => { if (!finished && video.currentTime < 0.5) { stalled = true; goToCut(); } }, 1500);
+    setTimeout(() => { if (!finished && video.currentTime < 0.3) { stalled = true; goToCut(); } }, 2500);
   }
   video.addEventListener("ended", () => { if (!chosen) video.pause(); });
   // Without a choice the video stops on the cut frame and waits there.
   video.addEventListener("timeupdate", () => {
+    // Chosen: cut on the video clock too, in case animation frames are throttled (hidden or background pages).
+    if (chosen && !finished && !stalled && video.currentTime >= CUT_T - 0.03) { video.playbackRate = 1; transition(); return; }
     if (!chosen && !video.muted && video.currentTime >= CUT_T - 0.8) video.volume = Math.max(0, 0.9 * (CUT_T - video.currentTime) / 0.8);
     if (!chosen && video.currentTime >= CUT_T) { video.pause(); video.currentTime = CUT_T; }
   });

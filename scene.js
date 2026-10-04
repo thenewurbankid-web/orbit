@@ -909,7 +909,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       return { head, body, foot };
     }
     if (slate.kind === "notice") {
-      head.push({ t: "text", text: "Observatory", size: 20, weight: 600 });
+      head.push({ t: "text", text: "Orbit", size: 20, weight: 600 });
       body.push({ t: "text", text: notice || "Waiting for data…", color: C.ink2 });
       return { head, body, foot };
     }
@@ -2063,7 +2063,18 @@ export async function startScene({ canvas, kbd, reduced }) {
       const k = Math.min(1, (now - d.t0) / d.dur), speed = d.rate * (1 - k) * (1 - k);
       rig.dist *= 1 - speed * dt; rig.goal.dist = rig.dist;
       activeUntil = Math.max(activeUntil, now + 100);
-      if (k >= 1) intro.drift = null;
+      if (k >= 1) { intro.drift = null; if (!reduced) intro.reveal = { t0: now, dur: 4200, dist0: rig.dist }; }
+    }
+    const rv = intro.reveal;
+    if (rv) {
+      // After the cut: a slow push-in toward the planets with a gentle sideways arc, so the
+      // depth layers slide past each other (parallax), then settle a little closer than before.
+      const k = Math.min(1, (now - rv.t0) / rv.dur), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      rig.goal.dist = rig.dist = rv.dist0 * (1 - 0.2 * e);
+      rig.yaw = 0.16 * Math.sin(Math.PI * e) * (1 - 0.35 * e);
+      rig.pitch = 0.05 * Math.sin(Math.PI * e);
+      activeUntil = Math.max(activeUntil, now + 100);
+      if (k >= 1 || pointers.size > 0) intro.reveal = null;
     }
     const h = intro.hud;
     let kpi = 1, corners = 1, strip = 1;

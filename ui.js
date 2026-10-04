@@ -4,7 +4,7 @@
 
 const css = `
 :root { --ease-out: cubic-bezier(.16,1,.3,1); --ease-in: cubic-bezier(.4,0,1,1); }
-.frost { position: fixed; z-index: 30; max-height: calc(100% - 48px); overflow-y: auto; box-sizing: border-box; color: #dfe9ef; font: 13px/1.55 "JetBrains Mono", ui-monospace, Menlo, monospace;
+.frost { position: fixed; z-index: 30; max-height: calc(100% - 48px); overflow-y: auto; box-sizing: border-box; color: #dfe9ef; font: 15px/1.6 "JetBrains Mono", ui-monospace, Menlo, monospace;
   background: rgba(10,12,16,.45); -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
   border: 1px solid rgba(255,255,255,.1); border-top-color: rgba(235,242,248,.45); border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0,0,0,.45); overflow: hidden;
@@ -13,19 +13,19 @@ const css = `
 .frost.off { opacity: 0; transform: scale(.985); transition: opacity 180ms var(--ease-in), transform 180ms var(--ease-in); }
 .frost::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>"); }
-.frost h2 { font-size: 11px; font-weight: 400; letter-spacing: .14em; color: rgba(160,225,255,.9); margin: 0 0 10px; }
+.frost h2 { font-size: 13px; font-weight: 400; letter-spacing: .14em; color: rgba(160,225,255,.9); margin: 0 0 10px; }
 .frost p { margin: 0 0 8px; color: #b8c4cc; }
 .frost code { color: #eef7fb; }
-.frost .rows { display: grid; gap: 6px; margin: 8px 0; max-height: 46vh; overflow-y: auto; }
-.frost .rowi { display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; align-items: center; padding: 9px 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; cursor: pointer; background: rgba(255,255,255,.02);
+.frost .rows { display: grid; gap: 10px; margin: 8px 0; max-height: 46vh; overflow-y: auto; }
+.frost .rowi { display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; align-items: center; padding: 14px 16px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; cursor: pointer; background: rgba(255,255,255,.02);
   opacity: 0; transform: translateY(4px); animation: ui-in 280ms var(--ease-out) forwards; }
 .frost .rowi:hover { border-color: rgba(160,225,255,.35); }
 .frost .rowi.sel { border-color: rgba(160,225,255,.7); background: rgba(120,200,240,.08); }
 .frost .rowi .box { width: 12px; height: 12px; border: 1px solid rgba(200,230,245,.6); border-radius: 3px; }
 .frost .rowi.sel .box { background: #9fdcff; border-color: #9fdcff; box-shadow: 0 0 8px rgba(160,225,255,.6); }
-.frost .rowi .meta { color: #8fa0aa; font-size: 11px; }
-.frost .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
-.frost button { font: inherit; font-size: 11px; letter-spacing: .1em; color: #dff3fb; background: rgba(120,200,240,.08); border: 1px solid rgba(160,225,255,.4); border-radius: 6px; padding: 8px 14px; cursor: pointer; transition: background 180ms, border-color 180ms, opacity 180ms; }
+.frost .rowi .meta { color: #8fa0aa; font-size: 13px; }
+.frost .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; justify-content: center; align-items: center; }
+.frost button { font: inherit; font-size: 13px; padding: 10px 18px; letter-spacing: .1em; color: #dff3fb; background: rgba(120,200,240,.08); border: 1px solid rgba(160,225,255,.4); border-radius: 6px; padding: 8px 14px; cursor: pointer; transition: background 180ms, border-color 180ms, opacity 180ms; }
 .frost button.dim { border-color: rgba(255,255,255,.15); color: #aab4bc; background: transparent; }
 .frost button.start { font-weight: 600; }
 .frost button.start:not(:disabled) { animation: ui-glow 2.4s ease-in-out infinite; }
@@ -66,11 +66,11 @@ export function frostPanel(html, { width = 460, onClose, closeOnOutside = true, 
   style();
   const el = document.createElement("div");
   el.className = "frost";
-  Object.assign(el.style, { left: "50%", width: `min(${width}px, calc(100% - 32px))`, padding: "18px 20px", marginLeft: `calc(min(${width}px, calc(100% - 32px)) / -2)` });
-  if (bottom != null) el.style.bottom = bottom; else { el.style.top = "50%"; el.style.transform = "translateY(-50%) scale(.98)"; }
+  Object.assign(el.style, { left: "50%", width: `min(${width}px, calc(100% - 32px))`, padding: "26px 30px" });
+  if (bottom != null) { el.style.bottom = bottom; el.style.transform = "translateX(-50%)"; } else { el.style.top = "50%"; el.style.transform = "translate(-50%, -50%) scale(.98)"; }
   el.innerHTML = html;
   document.body.appendChild(el);
-  requestAnimationFrame(() => { el.classList.add("on"); if (bottom == null) el.style.transform = "translateY(-50%)"; });
+  requestAnimationFrame(() => { el.classList.add("on"); if (bottom == null) el.style.transform = "translate(-50%, -50%)"; });
   let closed = false;
   const close = () => {
     if (closed) return; closed = true;
@@ -210,3 +210,4 @@ export function createAlertUI({ onTap }) {
     },
   };
 }
+

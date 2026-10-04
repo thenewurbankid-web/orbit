@@ -89,7 +89,7 @@ export function play(name) {
   if (now - (last.get(name) ?? -1e9) < (LIMIT[name] ?? 500)) return;
   last.set(name, now);
   switch (name) {
-    case "press": blip(880, 0.08, 0.2, "square"); blip(1320, 0.12, 0.12, "sine", sfx, 0.06); break;
+    case "press": blip(660, 0.12, 0.06, "sine"); blip(990, 0.16, 0.04, "sine", sfx, 0.05); break;
     case "door": // timed to the video: hiss as the door opens (~2 s), clunk, then the hum fades in
       noiseHit(2.6, 300, 2400, 0.16, 1.9, "bandpass");
       blip(70, 0.35, 0.35, "sine", sfx, 1.85); noiseHit(0.18, 200, 120, 0.3, 1.85, "lowpass");
@@ -97,7 +97,7 @@ export function play(name) {
       setTimeout(() => ambienceIn(4), 5000);
       break;
     case "enter": ambienceIn(2); blip(520, 0.2, 0.08); blip(780, 0.3, 0.06, "sine", sfx, 0.08); break;
-    case "ping": blip(1600, 0.5, 0.07); blip(1600, 0.4, 0.03, "sine", sfx, 0.25); break;
+    case "ping": blip(1046, 0.7, 0.045, "triangle"); blip(1568, 0.6, 0.02, "sine", sfx, 0.02); blip(1046, 0.5, 0.015, "sine", sfx, 0.28); break; // warm two-partial ping with a faint echo
     case "alarm": // question arrival: a quiet sonar ping with a soft echo
       blip(1150, 0.9, 0.06, "sine"); blip(1150, 0.7, 0.025, "sine", sfx, 0.32); blip(1150, 0.5, 0.01, "sine", sfx, 0.64); break;
     case "laser": { const o = blip(1400, 0.12, 0.05, "sawtooth"); o.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.12); break; }
@@ -106,7 +106,7 @@ export function play(name) {
     case "rumble": break; // silent: meteor impacts are outside the ship
     case "chime": [1047, 1319, 1568].forEach((f, i) => blip(f, 0.9, 0.06, "sine", sfx, i * 0.09)); break;
     case "warn": blip(1319, 1.2, 0.05, "sine"); blip(988, 1.4, 0.045, "sine", sfx, 0.2); break; // soft two-note chime
-    case "click": blip(2400, 0.02, 0.05, "square"); break;
+    case "click": { const o = blip(1500, 0.07, 0.03, "sine"); o.frequency.exponentialRampToValueAtTime(950, ctx.currentTime + 0.07); break; } // soft, rounded tick
   }
 }
 

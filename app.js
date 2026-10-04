@@ -422,7 +422,7 @@ function renderList() {
   const b = store.board;
   const s = summary();
   const left = Math.max(0, Math.round((store.countdownAt - Date.now()) / 1000));
-  let h = `<header><h1>Observatory</h1><span class="spacer"></span><button data-l="close">Back to the sky</button></header>`;
+  let h = `<header><h1>Orbit</h1><span class="spacer"></span><button data-l="close">Back to the sky</button></header>`;
   if (store.mode === "remote" && store.link.state !== "connected") h += remoteLinkHtml();
   if (!b) { $("listMain").innerHTML = h + `<p class="muted">Waiting for data…</p>`; return; }
   h += `<p><strong>${s.inProgress}</strong> in progress · <strong>${s.blocked}</strong> blocked · <strong>${s.waiting}</strong> waiting on you · ${s.review} in review · ${s.todo} to do</p>`;

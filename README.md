@@ -1,4 +1,4 @@
-# watch-dog
+# Orbit
 
 The phone side of a personal Paperclip status board. Open it from the QR code on the board running
 on the Mac: the page reads the pairing offer from the link, shows a reply code to paste back into
