@@ -150,14 +150,17 @@ export function runIntro(opts) {
   }
   hot.onclick = press;
   // Title menu before the door: START reveals the door button, HELP explains the app.
-  let title = null;
+  let title = null, nameEl = null;
   function showTitle() {
     hot.style.display = hint.style.display = "none";
-    title = frostPanel(`<div style="text-align:center">
-      <h1 style="margin:6px 0 10px;font-weight:200;font-size:56px;letter-spacing:.42em;padding-left:.42em;color:#fff;text-shadow:0 0 6px rgba(255,255,255,.9),0 0 18px rgba(200,235,255,.65),0 0 42px rgba(150,210,255,.4)">ORBIT</h1>
-      <p style="opacity:.75;margin:0 0 6px;font-size:15px">A live view of your Paperclip AI companies.</p>
-      <div class="btns"><button class="primary" data-a="start">START</button><button data-a="help">HELP</button></div></div>`,
-      { width: 540, closeOnOutside: false });
+    nameEl = document.createElement("div");
+    nameEl.textContent = "ORBIT";
+    Object.assign(nameEl.style, { position: "fixed", left: "50%", top: "calc(50% - 116px)", transform: "translate(-50%, -100%)", zIndex: 31, pointerEvents: "none",
+      font: '200 64px/1 "JetBrains Mono", ui-monospace, Menlo, monospace', letterSpacing: ".42em", paddingLeft: ".42em", color: "#fff", whiteSpace: "nowrap",
+      textShadow: "0 0 6px rgba(255,255,255,.9), 0 0 18px rgba(200,235,255,.65), 0 0 42px rgba(150,210,255,.4)", opacity: 0, transition: "opacity 450ms ease-out" });
+    document.body.appendChild(nameEl); requestAnimationFrame(() => { nameEl.style.opacity = 1; });
+    title = frostPanel(`<div style="display:grid;gap:12px"><button class="primary" data-a="start" style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em">START</button><button data-a="help" style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em">HELP</button></div>`,
+      { width: 340, closeOnOutside: false });
     title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
     title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
   }
@@ -165,6 +168,7 @@ export function runIntro(opts) {
     if (!title) return;
     opts.sound?.("press"); // unlock audio on this gesture
     title.close();
+    if (nameEl) { const n = nameEl; n.style.opacity = 0; setTimeout(() => n.remove(), 450); nameEl = null; }
     title = null;
     hot.style.display = hint.style.display = "";
   }
