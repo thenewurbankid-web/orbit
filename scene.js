@@ -2044,6 +2044,15 @@ export async function startScene({ canvas, kbd, reduced }) {
   if (store.introPending) svgFrame.setHudAlpha(0);
   store.on("introGrade", (g) => { intro.grade = { ...g, t0: performance.now() }; kick(); });
   store.on("introDrift", (d) => { intro.drift = { ...d, t0: performance.now() }; kick(); });
+  // After the intro flash, fly into the planet that most needs attention: questions waiting,
+  // then blocked issues, then the most active; ties go to the first planet.
+  store.on("introFocus", () => {
+    const comps = (store.board?.companies ?? []).filter((c) => companyObjs.has(c.prefix));
+    if (!comps.length) return;
+    const score = (c) => c.issues.filter((i) => i.questions?.length).length * 100 + c.issues.filter((i) => i.status === "blocked").length * 10 + c.issues.filter((i) => i.status === "in_progress").length;
+    const best = comps.reduce((a, c) => (score(c) > score(a) ? c : a), comps[0]);
+    setTimeout(() => goCompany(best.prefix), reduced ? 0 : 450);
+  });
   store.on("introHud", (h) => { intro.hud = h ? { t0: performance.now() } : { t0: -1 }; kick(); });
   function updateIntro(now, dt) {
     const g = intro.grade;

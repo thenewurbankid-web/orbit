@@ -73,9 +73,9 @@ export function createFrame(host) {
     const lx = 0.5 - light[0] * 0.5, ly = 0.5 - light[1] * 0.5;
     // Clean metal: one lit side, one shadow side, few mid greys.
     const body = el("linearGradient", { id: "obs-body", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
-    el("stop", { offset: 0, "stop-color": "#4a5057" }, body); el("stop", { offset: 0.5, "stop-color": "#2a2e33" }, body); el("stop", { offset: 1, "stop-color": "#17191c" }, body);
+    el("stop", { offset: 0, "stop-color": "#24272b" }, body); el("stop", { offset: 0.5, "stop-color": "#1c1f22" }, body); el("stop", { offset: 1, "stop-color": "#141619" }, body);
     const lipG = el("linearGradient", { id: "obs-lip", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
-    el("stop", { offset: 0, "stop-color": "#c3cad1" }, lipG); el("stop", { offset: 1, "stop-color": "#5f666d" }, lipG);
+    el("stop", { offset: 0, "stop-color": "#5b6168" }, lipG); el("stop", { offset: 1, "stop-color": "#33383d" }, lipG);
     const glassG = el("linearGradient", { id: "obs-glass", x1: 0, y1: 0, x2: 1, y2: 1 }, defs);
     el("stop", { offset: 0.2, "stop-color": "rgba(255,255,255,0)" }, glassG); el("stop", { offset: 0.27, "stop-color": "rgba(210,230,245,0.03)" }, glassG); el("stop", { offset: 0.34, "stop-color": "rgba(255,255,255,0)" }, glassG);
     const edgeG = el("radialGradient", { id: "obs-edge", cx: 0.5, cy: 0.5, r: 0.75 }, defs);
@@ -98,15 +98,15 @@ export function createFrame(host) {
       const a = pts[i], b = pts[(i + 1) % pts.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       const nx = (b[1] - a[1]) / L, ny = -(b[0] - a[0]) / L;
       const f = -(nx * light[0] + ny * light[1]);
-      el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": 1, "stroke-linecap": "square", stroke: f > 0.05 ? `rgba(240,246,250,${0.35 + f * 0.6})` : `rgba(0,0,0,${0.55 + Math.max(0, -f) * 0.35})` }, svg);
+      el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": 1, "stroke-linecap": "square", stroke: f > 0.05 ? `rgba(220,232,240,${0.12 + f * 0.18})` : `rgba(0,0,0,${0.55 + Math.max(0, -f) * 0.35})` }, svg);
     }
     const len = pts.reduce((acc, p, i) => acc + Math.hypot(pts[(i + 1) % pts.length][0] - p[0], pts[(i + 1) % pts.length][1] - p[1]), 0);
-    const sweep = el("path", { d: P(pts), fill: "none", stroke: "rgba(245,250,255,0.6)", "stroke-width": 1, "stroke-dasharray": `80 ${len}`, class: "obs-sweep" }, svg);
+    const sweep = el("path", { d: P(pts), fill: "none", stroke: "rgba(245,250,255,0.25)", "stroke-width": 1, "stroke-dasharray": `80 ${len}`, class: "obs-sweep" }, svg);
     sweep.style.setProperty("--len", String(len + 80));
     el("path", { d: P(openingPts(m, 0.5)), fill: "none", "stroke-width": 1.5, class: "obs-alert" }, svg);
     el("path", { d: P(openingPts(m, lip + 0.5)), fill: "none", "stroke-width": 1, class: "obs-alert" }, svg);
     // Outer edge of the frame against the screen edge: one thin highlight line on top.
-    el("line", { x1: 0, y1: 0.5, x2: W, y2: 0.5, stroke: "rgba(255,255,255,0.08)", "stroke-width": 1 }, svg);
+    el("line", { x1: 0, y1: 0.5, x2: W, y2: 0.5, stroke: "rgba(255,255,255,0.03)", "stroke-width": 1 }, svg);
     // 4. Glass: faint reflection band and slightly darker edges (no blur).
     const g = el("g", { "clip-path": "url(#obs-open)" }, svg);
     el("rect", { width: W, height: H, fill: "url(#obs-glass)" }, g);

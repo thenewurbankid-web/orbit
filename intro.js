@@ -7,9 +7,9 @@ const VW = 848, VH = 478;
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 12.0;
+const CUT_T = 6.75; // just before the video's bright warp flash (~7.0 s): we cut on the flash, before its own planets appear
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
-const WINDOW_VISIBLE_AT = 9;                            // seconds
+const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
 
 // Cover layout that also crops the "✦" watermark (bottom-right, ~91% x / ~84% y) off screen.
@@ -308,7 +308,7 @@ export function runIntro(opts) {
     { const t0 = performance.now(); const up = () => { const k = Math.min(1, (performance.now() - t0) / 900); if (!video.muted && !finished) video.volume = 0.9 * k; if (k < 1) setTimeout(up, 30); }; up(); }
     const tick = () => {
       if (finished) return;
-      if (video.currentTime >= CUT_T - 0.03) { video.pause(); video.playbackRate = 1; transition(); return; }
+      if (video.currentTime >= CUT_T - 0.03) { video.playbackRate = 1; transition(); return; }
       requestAnimationFrame(tick);
     };
     if (video.paused) video.play().catch(() => { video.muted = true; video.play().catch(() => { stalled = true; goToCut(); }); });
@@ -355,48 +355,34 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    fadeOutVideo();
-    const W = innerWidth, H = innerHeight, m = frameMetrics(W, H);
-    const from = { x0: rect.left + WIN_PX.x0 / VW * rect.w, y0: rect.top + WIN_PX.y0 / VH * rect.h, x1: rect.left + WIN_PX.x1 / VW * rect.w, y1: rect.top + WIN_PX.y1 / VH * rect.h };
-    const to = { x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1 };
-    const frame = opts.frame?.();
-    opts.emit?.("introGrade", { ...sampleGrade(), hold: XF0 + 200, ease: 2000 });
-    opts.emit?.("introDrift", { rate: ZOOM_RATE * 2.5, dur: 1500 });
-    root.style.background = "transparent";
-    canvas.style.transition = ""; canvas.style.opacity = "1";
+    // Cut on the video's warp flash: a bright flash covers the swap, so the video's own window
+    // (and its planets) never shows; our scene appears as the flash fades.
+    const flash = document.createElement("div");
+    Object.assign(flash.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
+      background: "radial-gradient(60% 55% at 50% 42%, #ffffff 0%, #e6f6ff 30%, rgba(170,220,255,.85) 60%, rgba(40,70,100,.9) 100%)",
+      transition: "opacity 260ms cubic-bezier(.4,0,1,1)" });
+    document.body.appendChild(flash);
+    const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
-    frame?.setZ(21); frame?.setOpacity(0); frame?.setOpening(from, W, H);
-    tr = { from, to, frame, W, H };
-    if (reduced) { applyAt(XF1 + 1); return finish(); }
-    if (new URLSearchParams(location.search).has("introdebug")) { window.__introApplyAt = applyAt; window.__introFinish = finish; applyAt(0); return; }
-    const t0 = performance.now();
-    const step = () => {
-      const t = performance.now() - t0;
-      applyAt(t);
-      if (t < XF1) (document.hidden ? setTimeout(step, 16) : requestAnimationFrame(step));
-      else finish();
-    };
-    step();
-  }
-  const ease = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-  function applyAt(t) {
-    const { from, to, frame, W, H } = tr;
-    const e = ease(Math.min(1, Math.max(0, t / MOVE)));
-    const cur = { x0: from.x0 + (to.x0 - from.x0) * e, y0: from.y0 + (to.y0 - from.y0) * e, x1: from.x1 + (to.x1 - from.x1) * e, y1: from.y1 + (to.y1 - from.y1) * e };
-    // Video transform: map its window (from) onto the current opening (cur).
-    const sx = (cur.x1 - cur.x0) / (from.x1 - from.x0), sy = (cur.y1 - cur.y0) / (from.y1 - from.y0);
-    const tx = cur.x0 - (from.x0 - rect.left) * sx - rect.left, ty = cur.y0 - (from.y0 - rect.top) * sy - rect.top;
-    video.style.transform = `translate(${tx}px, ${ty}px) scale(${sx}, ${sy})`;
-    frame?.setOpening(cur, W, H);
-    frame?.setOpacity(Math.min(1, t / XF0));
-    video.style.opacity = String(t < XF0 ? 1 : Math.max(0, 1 - (t - XF0) / (XF1 - XF0)));
+    tr = { frame, W, H };
+    requestAnimationFrame(() => { flash.style.opacity = "1"; });
+    setTimeout(() => {
+      fadeOutVideo();
+      video.style.opacity = "0";
+      root.style.background = "transparent";
+      canvas.style.transition = ""; canvas.style.opacity = "1";
+      frame?.setOpening(null, W, H); frame?.setOpacity(1); frame?.setZ(2);
+      flash.style.transition = "opacity 1100ms cubic-bezier(.22,1,.36,1)";
+      flash.style.opacity = "0";
+      setTimeout(() => flash.remove(), 1200);
+      finish();
+    }, reduced ? 0 : 280);
   }
   function finish() {
     opts.sound?.("enter"); // our ship sound starts only once the video is over
-    const { frame, W, H } = tr;
     root.remove(); removeEventListener("resize", place);
-    frame?.setOpening(null, W, H); frame?.setOpacity(1); frame?.setZ(2);
     opts.emit?.("introHud", true);
+    opts.emit?.("introFocus", true); // fly into one of our planets
     opts.onDone?.(chosen);
   }
   return { root };
