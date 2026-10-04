@@ -153,22 +153,30 @@ export function runIntro(opts) {
   let title = null, nameEl = null;
   function showTitle() {
     hot.style.display = hint.style.display = "none";
-    nameEl = document.createElement("div");
-    nameEl.textContent = "ORBIT";
-    Object.assign(nameEl.style, { position: "fixed", left: "50%", top: "calc(50% - 116px)", transform: "translate(-50%, -100%)", zIndex: 31, pointerEvents: "none",
-      font: '200 64px/1 "JetBrains Mono", ui-monospace, Menlo, monospace', letterSpacing: ".42em", paddingLeft: ".42em", color: "#fff", whiteSpace: "nowrap",
-      textShadow: "0 0 6px rgba(255,255,255,.9), 0 0 18px rgba(200,235,255,.65), 0 0 42px rgba(150,210,255,.4)", opacity: 0, transition: "opacity 450ms ease-out" });
-    document.body.appendChild(nameEl); requestAnimationFrame(() => { nameEl.style.opacity = 1; });
-    title = frostPanel(`<div style="display:grid;gap:12px"><button class="primary" data-a="start" style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em">START</button><button data-a="help" style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em">HELP</button></div>`,
-      { width: 340, closeOnOutside: false });
+    const btn = 'style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em"';
+    title = frostPanel(`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:40px">
+      <div style="font:200 72px/1 'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:.42em;padding-left:.42em;color:#fff;white-space:nowrap;text-shadow:0 0 6px rgba(255,255,255,.9),0 0 18px rgba(200,235,255,.65),0 0 42px rgba(150,210,255,.4)">ORBIT</div>
+      <div style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}>START</button><button data-a="help" ${btn}>HELP</button></div></div>`,
+      { width: 10000, closeOnOutside: false });
+    // Full-screen frosted card over the door.
+    Object.assign(title.el.style, { left: "0", top: "0", width: "100%", height: "100%", maxHeight: "none", transform: "none", borderRadius: "0", border: "0", padding: "24px", boxSizing: "border-box" });
+    requestAnimationFrame(() => { if (title) title.el.style.transform = "none"; }); // frostPanel re-centres on its first frame
     title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
     title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
+  }
+  // Dissolve a frosted panel slowly (blur and opacity together) instead of the quick close.
+  function dissolve(panel, ms = 700) {
+    if (!panel) return;
+    const el = panel.el;
+    el.style.transition = `opacity ${ms}ms cubic-bezier(.22,1,.36,1), backdrop-filter ${ms}ms cubic-bezier(.22,1,.36,1), -webkit-backdrop-filter ${ms}ms cubic-bezier(.22,1,.36,1)`;
+    el.style.pointerEvents = "none";
+    requestAnimationFrame(() => { el.style.opacity = "0"; el.style.backdropFilter = el.style.webkitBackdropFilter = "blur(0px)"; });
+    setTimeout(() => panel.close(), ms);
   }
   function startDoor() {
     if (!title) return;
     opts.sound?.("press"); // unlock audio on this gesture
-    title.close();
-    if (nameEl) { const n = nameEl; n.style.opacity = 0; setTimeout(() => n.remove(), 450); nameEl = null; }
+    dissolve(title);
     title = null;
     hot.style.display = hint.style.display = "";
   }
@@ -180,7 +188,7 @@ export function runIntro(opts) {
     if (chosen && !immediate) return;
     chosen = kind === "skip" ? (chosen ?? "enter") : kind;
     panel.classList.remove("on");
-    sel?.close();
+    dissolve(sel);
     if (chosen === "demo") opts.onDemo();
     goToCut();
   }
@@ -194,7 +202,8 @@ export function runIntro(opts) {
       return;
     }
     if (video.currentTime >= CUT_T) { video.currentTime = CUT_T; video.addEventListener("seeked", () => transition(), { once: true }); return; }
-    video.playbackRate = 1; video.muted = false; video.volume = 0.9; // play the whole door sequence with its soundtrack
+    video.playbackRate = 1; video.muted = false; video.volume = 0; // play the whole door sequence with its soundtrack
+    { const t0 = performance.now(); const up = () => { const k = Math.min(1, (performance.now() - t0) / 900); if (!video.muted && !finished) video.volume = 0.9 * k; if (k < 1) setTimeout(up, 30); }; up(); }
     const tick = () => {
       if (finished) return;
       if (video.currentTime >= CUT_T - 0.03) { video.pause(); video.playbackRate = 1; transition(); return; }
