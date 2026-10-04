@@ -48,7 +48,7 @@ function el(tag, attrs = {}, parent) {
 export function createFrame(host) {
   let glassGrad = null, glare = { x: 0, y: 0 };
   // Slide the glass gloss with device tilt or pointer (-1..1 each), so it reads as a real reflection.
-  function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.35).toFixed(3)} ${(glare.y * 0.25).toFixed(3)})`); }
+  function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.09).toFixed(3)} ${(glare.y * 0.06).toFixed(3)})`); }
   const svg = el("svg", { "aria-hidden": "true", "shape-rendering": "geometricPrecision" });
   Object.assign(svg.style, { position: "fixed", inset: "0", width: "100vw", height: "100%", pointerEvents: "none", zIndex: "2" });
   host.appendChild(svg);

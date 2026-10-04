@@ -98,7 +98,7 @@ export function runIntro(opts) {
       .orbit-btns .ripple { display: none !important; }
       @media (prefers-reduced-motion: reduce) { .intro .hot { animation: none; opacity: .9; } }
     </style>
-    <video muted playsinline preload="metadata" poster="assets/intro-poster.jpg"></video>
+    <video muted playsinline preload="auto" poster="assets/intro-poster.jpg"></video>
     <button class="hot" aria-label="Press to enter"></button>
     <div class="hint">PRESS TO ENTER</div>
     <button class="skip">skip ›</button>
@@ -317,7 +317,25 @@ export function runIntro(opts) {
     if (!ids.length) return check();
     opts.select?.(ids); choose("enter");
   }
-  showTitle();
+  // Loader until the intro video can play through: a thin ring and a percentage, then the title.
+  const loader = document.createElement("div");
+  loader.className = "intro-loader";
+  loader.innerHTML = `<svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true"><circle cx="22" cy="22" r="19" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="1.5"/><circle class="arc" cx="22" cy="22" r="19" fill="none" stroke="rgba(235,245,250,.85)" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="119.4" stroke-dashoffset="119.4" transform="rotate(-90 22 22)"/></svg><span class="pct" aria-live="polite">0%</span>`;
+  Object.assign(loader.style, { position: "fixed", inset: "0", zIndex: 45, display: "grid", placeItems: "center", alignContent: "center", gap: "12px", background: "#000",
+    color: "rgba(230,240,245,.7)", font: '300 11px/1 "JetBrains Mono", ui-monospace, Menlo, monospace', letterSpacing: ".3em", transition: "opacity 600ms ease" });
+  document.body.appendChild(loader);
+  const arc = loader.querySelector(".arc"), pct = loader.querySelector(".pct");
+  const progress = () => { const d = video.duration || 20; let end = 0; for (let i = 0; i < video.buffered.length; i++) end = Math.max(end, video.buffered.end(i)); return Math.min(1, end / Math.min(d, CUT_T + 1)); };
+  let shown = false;
+  const tick = setInterval(() => { const k = progress(); arc.setAttribute("stroke-dashoffset", String(119.4 * (1 - k))); pct.textContent = Math.round(k * 100) + "%"; if (k >= 0.999) ready(); }, 120);
+  function ready() {
+    if (shown) return; shown = true; clearInterval(tick);
+    arc.setAttribute("stroke-dashoffset", "0"); pct.textContent = "100%";
+    loader.style.opacity = "0"; setTimeout(() => loader.remove(), 650);
+    showTitle();
+  }
+  video.addEventListener("canplaythrough", ready, { once: true });
+  setTimeout(ready, 12000); // never block on a slow network: show the title after 12 s regardless
   addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
   skip.onclick = () => { if (title) { dissolve(title); title = null; } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
 
