@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>Observatory</title>
+<style>
+:root {
+  --bg: #000; --sheet: #0e0e0e; --ink: #b8b8b8; --ink-2: #808080; --rule: #222;
+  --ice: #e2e6ea; --amber: #d9a860; --ember: #c0604a; --frost: #9c9c9c;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); overflow: hidden; overscroll-behavior: none; }
+canvas#sky { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; outline: none; }
+/* Visually hidden but focusable: the keyboard input for in-scene typing, and the skip link. */
+.vh { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0; overflow: hidden; clip-path: inset(50%); font-size: 16px; }
+.vh-link:focus { clip-path: none; width: auto; height: auto; opacity: 1; z-index: 5; background: var(--sheet); color: var(--ink); padding: 8px 12px; }
+/* ---------- hidden list view (accessibility and slow devices) ---------- */
+#list { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; background: var(--bg); z-index: 10; -webkit-overflow-scrolling: touch; }
+#list[hidden] { display: none; }
+#list main { max-width: 1000px; margin: 0 auto; padding: 16px 16px 60px; }
+#list h1 { font-size: 19px; margin: 0; }
+#list h2 { font-size: 16px; margin: 0; }
+#list h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-2); margin: 14px 0 6px; }
+#list .muted { color: var(--ink-2); } #list .small { font-size: 13px; } #list .mono { font-family: var(--mono); font-size: 12.5px; }
+#list button, #list input, #list textarea, #list select { font: inherit; color: inherit; }
+#list button { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 5px 11px; cursor: pointer; min-height: 34px; }
+#list button.primary { border-color: var(--ice); color: var(--ice); font-weight: 600; }
+#list button.sel { border-color: var(--ice); background: color-mix(in srgb, var(--ice) 18%, transparent); font-weight: 600; }
+#list input[type=number] { width: 72px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+#list textarea, #list select { width: 100%; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+#list textarea { min-height: 54px; resize: vertical; }
+#list header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+#list header .spacer { flex: 1; }
+#list section { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; margin-bottom: 14px; min-width: 0; }
+#list .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; border: 1px solid var(--rule); white-space: nowrap; }
+#list .s-in_progress { color: var(--ice); border-color: var(--ice); } #list .s-blocked { color: var(--ember); border-color: var(--ember); }
+#list .s-in_review { color: var(--frost); } #list .s-done { color: var(--ink-2); }
+#list .issue { border-top: 1px solid var(--rule); padding: 9px 0; overflow-wrap: anywhere; }
+#list .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+#list .q { border: 1px solid var(--amber); border-radius: 8px; padding: 10px; margin-top: 10px; overflow-wrap: anywhere; }
+#list .details { white-space: pre-wrap; font-size: 13px; max-height: 240px; overflow-y: auto; border: 1px solid var(--rule); border-radius: 6px; padding: 8px; }
+#list .full { white-space: pre-wrap; font-size: 13px; max-height: 300px; overflow-y: auto; }
+#list .log { list-style: none; margin: 0; padding: 0; }
+#list .log li { padding: 4px 0; border-top: 1px solid var(--rule); font-size: 13.5px; overflow-wrap: anywhere; }
+#list .msgs { max-height: 420px; overflow-y: auto; font-size: 13.5px; }
+#list .msg { padding: 5px 0; border-top: 1px solid var(--rule); overflow-wrap: anywhere; white-space: pre-wrap; }
+#list .msg.tool { color: var(--ink-2); font-family: var(--mono); font-size: 12px; }
+#list .err { color: var(--ember); } #list .ok { color: var(--ice); font-weight: 600; }
+#list .qr { background: #fff; padding: 10px; display: inline-block; border-radius: 6px; }
+#list .code { font-family: var(--mono); font-size: 11px; word-break: break-all; max-height: 120px; overflow-y: auto; border: 1px solid var(--rule); padding: 6px; border-radius: 6px; }
+#fallback { position: fixed; inset: auto 16px 16px 16px; color: var(--ink-2); font-size: 13px; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@200;300;400&display=swap">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<a href="#" class="vh vh-link" id="skip">Open the list view (plain layout)</a>
+<canvas id="sky" tabindex="-1" aria-label="Observatory: a sky view of the Paperclip companies. Long-press the top-left corner, or use the list view link, for a plain layout."></canvas>
+<input id="kbd" class="vh" type="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" aria-label="Type here" enterkeyhint="send">
+<div id="list" hidden><main id="listMain"></main></div>
+<noscript><p id="fallback">This page needs JavaScript.</p></noscript>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
