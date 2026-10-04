@@ -343,6 +343,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       const openCount = c.issues.filter((i) => OPEN.includes(i.status)).length;
       co.radius = Math.min(5, 2 + openCount * 0.3);
       co.planet.position.copy(co.center); co.planet.scale.setScalar(co.radius);
+      { const dim = c.paused ? 0.35 : 1; co.planet.traverse?.((m) => { if (m.material?.color) { m.userData.baseColor ??= m.material.color.clone(); m.material.color.copy(m.userData.baseColor).multiplyScalar(dim); } }); }
       co.rim.position.copy(co.center); co.rim.scale.setScalar(co.radius);
       if (co.rings) { co.rings.position.copy(co.center); co.rings.scale.setScalar(co.radius); }
       // The company's overall % is a thin ring around the planet.
@@ -1158,7 +1159,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       ...(store.mode === "host" || store.mode === "remote" ? [{ id: "pair", label: pairState === "connected" ? (narrow ? "linked" : "phone linked") : store.mode === "remote" ? "link" : narrow ? "pair" : "pair phone", on: pairState === "connected" }] : []),
       { id: "sound", label: snd.soundState().muted ? (narrow ? "muted" : "sound off") : (narrow ? "snd" : "sound on"), on: !snd.soundState().muted },
       { id: "vol", label: `vol ${Math.round(snd.soundState().volume * 100)}%` },
-      ...(view.level !== "sky" && view.company && store.mode !== "demo" ? [(() => { const c = (store.board?.companies ?? []).find((x) => x.prefix === view.company); return { id: "work", label: c?.paused ? (narrow ? "▶" : "▶ start work") : (narrow ? "■" : "■ stop work") }; })()] : []),
+      ...(view.level !== "sky" && view.company && store.mode !== "demo" ? [(() => { const c = (store.board?.companies ?? []).find((x) => x.prefix === view.company); return { id: "work", label: (c?.paused ? "⏸ " : "⌘ ") + (narrow ? "cmd" : "command"), on: !!c?.paused }; })()] : []),
       { id: "project", label: narrow ? "+" : "+ project" },
       { id: "help", label: "?" },
     ];
@@ -1771,28 +1772,49 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   // ---------------- projects: connect, disconnect, re-roll ----------------
-  // Start / stop all work on one project (pauses or resumes its Paperclip agents).
+  // Project command panel: point of contact, a message to them, and Pause / Stop / Start for the whole project.
   async function openWorkPanel(prefix) {
     const ui = await import("./ui.js");
     const c = (store.board?.companies ?? []).find((x) => x.prefix === prefix); if (!c) return;
-    const action = c.paused ? "start" : "stop";
-    let plan = null;
-    try { plan = (await act("projectWork", { companyId: c.id, action, dryRun: true })).plan; } catch (e) { readout(`▼ ${e.message}`, "0"); return; }
-    const what = action === "stop"
-      ? `Pauses ${plan.pause.length} agent${plan.pause.length === 1 ? "" : "s"}${plan.cancel.length ? ` and cancels ${plan.cancel.length} running job${plan.cancel.length === 1 ? "" : "s"}` : ""}. Nothing else in Paperclip changes, and you can start it again here.`
-      : `Resumes ${plan.resume.length || "its"} agent${plan.resume.length === 1 ? "" : "s"} and wakes them so they pick up their work.`;
-    const p = ui.frostPanel(`<h2>${action === "stop" ? "STOP" : "START"} WORK · ${c.name.toUpperCase()}</h2><p>${what}</p><div class="btns"><button class="go">${action === "stop" ? "STOP WORK" : "START WORK"}</button><button class="dim no">CANCEL</button></div><p class="err" style="color:#ff9a8a"></p>`, { width: 460, closeOnOutside: false });
-    p.el.querySelector(".no").onclick = () => p.close();
-    const armedAt = performance.now() + 800; // ignore clicks that land right as the panel opens
-    p.el.querySelector(".go").onclick = async (ev) => {
-      if (!ev.isTrusted || performance.now() < armedAt) return; // only a deliberate, real click stops or starts work
+    const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+    const agents = c.agents ?? [];
+    const state = c.paused ? "PAUSED" : "RUNNING";
+    const p = ui.frostPanel(`<h2>${esc(c.name.toUpperCase())} · <span style="color:${c.paused ? "#ffc27a" : "#8ff0c8"}">${state}</span></h2>
+      <p style="margin-bottom:6px">Point of contact</p>
+      <select class="poc" style="width:100%;background:rgba(255,255,255,.05);color:#e6f7fc;border:1px solid rgba(160,235,255,.3);border-radius:8px;padding:8px;font:inherit">${agents.map((a) => `<option value="${a.id}" ${a.id === c.poc?.id ? "selected" : ""}>${esc(a.name)}${a.paused ? " (paused)" : ""}</option>`).join("")}</select>
+      <textarea class="msg" rows="3" placeholder="Message to ${esc(c.poc?.name ?? "the lead")}…" style="width:100%;box-sizing:border-box;margin-top:12px;background:rgba(255,255,255,.04);color:#e6f7fc;border:1px solid rgba(160,235,255,.25);border-radius:8px;padding:10px;font:inherit;resize:vertical"></textarea>
+      <div class="btns" style="justify-content:flex-start"><button class="send">SEND TO ${esc((c.poc?.name ?? "LEAD").toUpperCase())}</button></div>
+      <p style="margin:18px 0 6px">Whole project</p>
+      <div class="btns" style="justify-content:flex-start;margin-top:0">
+        ${c.paused ? `<button class="act" data-a="start">▶ START</button>` : `<button class="act" data-a="pause">⏸ PAUSE</button><button class="act dim" data-a="stop">■ STOP</button>`}
+        <button class="dim close">CLOSE</button></div>
+      <p class="note" style="color:#9fb4be;font-size:13px;margin-top:10px"></p>`, { width: 520, closeOnOutside: false });
+    const note = p.el.querySelector(".note");
+    const armedAt = performance.now() + 800;
+    const real = (ev) => ev.isTrusted && performance.now() >= armedAt; // only deliberate, real clicks act
+    p.el.querySelector(".close").onclick = () => p.close();
+    p.el.querySelector(".poc").onchange = async (ev) => {
+      try { await act("projectPoc", { companyId: c.id, agentId: ev.target.value }); note.textContent = `Point of contact: ${ev.target.selectedOptions[0].textContent}`; } catch (e) { note.textContent = e.message; }
+    };
+    p.el.querySelector(".send").onclick = async (ev) => {
+      if (!real(ev)) return;
+      const text = p.el.querySelector(".msg").value.trim(); if (!text) { note.textContent = "Write a message first."; return; }
+      try { const r = await act("projectMessage", { companyId: c.id, text }); readout(`▲ Sent to ${r.to}${r.issue ? " · " + r.issue : ""}`, "0"); p.el.querySelector(".msg").value = ""; note.textContent = `Sent to ${r.to}${r.issue ? ` as ${r.issue}` : ""}. It wakes them up.`; }
+      catch (e) { note.textContent = e.message; }
+    };
+    const DESC = { pause: "Pause: agents stop picking up new work; anything running finishes.", stop: "Stop: pause, and cancel anything running now.", start: "Start: resume the agents and wake them." };
+    let pending = null;
+    p.el.querySelectorAll(".act").forEach((b) => (b.onclick = async (ev) => {
+      if (!real(ev)) return;
+      const action = b.dataset.a;
+      if (pending !== action) { pending = action; note.textContent = `${DESC[action]} Click ${b.textContent.trim()} again to confirm.`; return; }
       try {
         const r = await act("projectWork", { companyId: c.id, action });
-        readout(action === "stop" ? `■ Work stopped · ${c.name}` : `▶ Work started · ${c.name}`, "0");
+        readout(action === "start" ? `▶ Work started · ${c.name}` : action === "pause" ? `⏸ Work paused · ${c.name}` : `■ Work stopped · ${c.name}`, "0");
         if (r.errors?.length) readout(`▼ ${r.errors.length} step(s) failed · ${c.name}`, "0");
         p.close(); wakePanel();
-      } catch (e2) { p.el.querySelector(".err").textContent = e2.message; }
-    };
+      } catch (e2) { note.textContent = e2.message; }
+    }));
   }
   store.on("openConnect", () => openConnectPanel());
   store.on("openHelp", () => openHelpPanel());
@@ -2273,7 +2295,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const prefer = { sky: "company", company: "agent", agent: "issue", issue: "issue" }[view.level];
     const pk = pickWorld(e.clientX, e.clientY, prefer);
     if (!pk) return;
-    if (pk.kind === "company") goCompany(pk.id);
+    if (pk.kind === "company") { if (view.level === "company" && view.company === pk.id && store.mode !== "demo") openWorkPanel(pk.id); else goCompany(pk.id); }
     else if (pk.kind === "agent") goAgent(pk.id);
     else if (pk.kind === "issue") goIssue(pk.id);
   }
