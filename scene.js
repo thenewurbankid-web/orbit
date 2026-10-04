@@ -101,9 +101,9 @@ export async function startScene({ canvas, kbd, reduced }) {
   const nebTex = bakeNebula(renderer, tier.mobile ? 1024 : 2048);
   const nebMat = new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false,
-    uniforms: { map: { value: nebTex }, uPulse: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] } },
+    uniforms: { map: { value: nebTex }, uPulse: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] }, uBoltR: { value: [new THREE.Vector2(), new THREE.Vector2(), new THREE.Vector2()] }, uBolt: { value: null }, uBoltOn: { value: 0 } },
     vertexShader: `varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `uniform sampler2D map; uniform vec4 uPulse[3]; varying vec3 vDir;
+    fragmentShader: `uniform sampler2D map; uniform vec4 uPulse[3]; uniform vec2 uBoltR[3]; uniform sampler2D uBolt; uniform float uBoltOn; varying vec3 vDir;
       void main() {
         vec3 d = normalize(vDir);
         vec2 uv = vec2(atan(d.x, d.z) / 6.2831853 + 0.5, asin(clamp(d.y, -1.0, 1.0)) / 3.1415927 + 0.5);
@@ -115,6 +115,15 @@ export async function startScene({ canvas, kbd, reduced }) {
           float ang = acos(clamp(dot(d, normalize(uPulse[i].xyz)), -1.0, 1.0));
           float w = exp(-ang * ang * 30.0) * uPulse[i].w;
           col += vec3(0.62, 0.52, 1.0) * (edge * 1.2 + t.a * 0.35) * w;   // back-lit filament edges
+          if (uBoltOn > 0.5) {
+            // The bolt itself (NOAA photo), in the cloud's plane around the strike: seen only where the
+            // cloud thins at its edges, so most strokes stay hidden and only the glow gives them away.
+            vec3 c = normalize(uPulse[i].xyz), tx = normalize(cross(abs(c.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), c)), ty = cross(c, tx);
+            vec2 q = vec2(dot(d, tx), dot(d, ty)) / uBoltR[i].y; float cr = cos(uBoltR[i].x), sr = sin(uBoltR[i].x);
+            vec2 bu = vec2(cr * q.x - sr * q.y, sr * q.x + cr * q.y) * vec2(0.5, 0.45) + 0.5;
+            float b = (bu.x > 0.0 && bu.x < 1.0 && bu.y > 0.0 && bu.y < 1.0) ? texture2D(uBolt, bu).r : 0.0;
+            col += vec3(0.78, 0.74, 1.0) * b * b * (edge * 1.6 + 0.08) * uPulse[i].w * 0.9;
+          }
         }
         gl_FragColor = vec4(col, 1.0);
       }`,
@@ -132,7 +141,9 @@ export async function startScene({ canvas, kbd, reduced }) {
       const c = NEBULA_CENTRES[Math.floor(Math.random() * 3)];
       slot.dir.copy(c).normalize().add(new THREE.Vector3().randomDirection().multiplyScalar(0.18)).normalize();
       slot.t = 0; slot.dur = 0.15 + Math.random() * 0.25; slot.double = Math.random() < 0.35;
+      nebMat.uniforms.uBoltR.value[lightning.slots.indexOf(slot)].set(Math.random() * Math.PI * 2, 0.07 + Math.random() * 0.05);
     }
+    if (!nebMat.uniforms.uBoltOn.value && rfx.ready("lightning")) { nebMat.uniforms.uBolt.value = rfx.texture("lightning"); nebMat.uniforms.uBoltOn.value = 1; }
     lightning.slots.forEach((x, i) => {
       let w = 0;
       if (x.t >= 0) {
@@ -215,6 +226,32 @@ export async function startScene({ canvas, kbd, reduced }) {
   const warp = new THREE.LineSegments(warpGeo, warpMat);
   warp.frustumCulled = false;
   camera.add(warp);
+  // Real-light version: thin ribbons carrying the measured cross-section of a photographed meteor streak
+  // (assets/fx/meteor), grey, tapered at both ends; replaces the plain lines once the image is in.
+  const warpRealMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, side: THREE.DoubleSide,
+    uniforms: { map: { value: null }, uOpacity: { value: 0 } },
+    vertexShader: `attribute float aB; varying vec2 vUv; varying float vB; void main() { vUv = uv; vB = aB; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform sampler2D map; uniform float uOpacity; varying vec2 vUv; varying float vB;
+      void main() { vec3 c = texture2D(map, vec2(0.2 + vUv.x * 0.6, vUv.y)).rgb; float l = max(c.r, max(c.g, c.b));
+        float ends = sin(3.14159 * vUv.x); gl_FragColor = vec4(vec3(0.72, 0.8, 0.9) * l * ends * ends * vB * uOpacity, 1.0); }`,
+  });
+  const warpReal = (() => {
+    const n = tier.mobile ? 90 : 140, p = new Float32Array(n * 12), uv = new Float32Array(n * 8), bri = new Float32Array(n * 4), idx = [];
+    const src = warpGeo.attributes.position.array;
+    for (let i = 0; i < n; i++) {
+      const x = src[i * 6], y = src[i * 6 + 1], z = src[i * 6 + 2], r = Math.hypot(x, y) || 1;
+      const w = 0.014 + 0.004 * r, tx = (-y / r) * w, ty = (x / r) * w; // across the streak, in the view plane
+      p.set([x - tx, y - ty, z, x + tx, y + ty, z, x - tx, y - ty, z - 1, x + tx, y + ty, z - 1], i * 12);
+      uv.set([0, 0, 0, 1, 1, 0, 1, 1], i * 8);
+      bri.fill(0.35 + Math.random() * 0.65, i * 4, i * 4 + 4);
+      const o = i * 4; idx.push(o, o + 2, o + 1, o + 1, o + 2, o + 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(p, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uv, 2)); g.setAttribute("aB", new THREE.BufferAttribute(bri, 1)); g.setIndex(idx);
+    const m = new THREE.Mesh(g, warpRealMat); m.frustumCulled = false; m.visible = false;
+    camera.add(m); return m;
+  })();
 
   // ---------------- textures and labels ----------------
   const psfSpiky = fx.psfTexture(128, true);
@@ -1667,9 +1704,32 @@ export async function startScene({ canvas, kbd, reduced }) {
   };
   const streakBudget = () => (tier.name === "low" ? 1 : tier.name === "medium" ? 2 : 4);
 
+  // Meteor: a real streak (Perseid photo) drawn behind a small real star-glare head; it brightens, burns out
+  // and leaves a short fading train. The drawn sprite and embers are the fallback until the images load.
   function meteor(at) {
     const dir = new THREE.Vector3(1, -0.55, 0.15).normalize();
     const start = at.clone().addScaledVector(dir, -9).add(new THREE.Vector3(0, 2, 0)), end = at.clone().addScaledVector(dir, 7);
+    const real = rfx.ready("meteor") && rfx.ready("glint");
+    if (real) {
+      const trailM = rfx.meteorTrail(tier.mobile ? 0.05 : 0.04); world.add(trailM);
+      const head = rfx.glint("glint", new THREE.Color(0.85, 1.0, 0.9), 0.55, 0); world.add(head);
+      const u = trailM.material.uniforms, tail = v3(), path = new THREE.Line3(start, end);
+      return { dur: 2.0, update(k) {
+        const travel = Math.min(1, k / 0.7), e = fx.easeInOut(travel);           // 1.4 s across, then the train fades
+        const hp = v3().lerpVectors(start, end, e);
+        const burn = Math.sin(Math.PI * Math.min(1, travel * 1.05)) ** 0.7;      // brightens mid-path, then burns out
+        const linger = travel < 1 ? 1 : Math.max(0, 1 - (k - 0.7) / 0.3);
+        const len = 3.6 * Math.min(1, travel * 3);                                 // the train grows behind the head
+        path.closestPointToPoint(v3().copy(hp).addScaledVector(dir, -len), true, tail);
+        trailM.userData.set(tail, hp);
+        u.uOpacity.value = 1.6 * (travel < 1 ? 0.25 + 0.75 * burn : 0.4) * linger;
+        u.uHead.value = travel < 1 ? 0.75 : 0.75 + (k - 0.7) * 2;                    // after burn-out the train dims from the head end
+        head.position.copy(hp);
+        head.material.uniforms.uOpacity.value = travel < 1 ? 1.5 * burn : 0;
+        head.scale.setScalar(0.6 + 0.6 * burn);
+        if (travel < 1 && Math.random() < 0.5) particles.emit(hp.clone(), v3().randomDirection().multiplyScalar(0.12), HOT.clone().multiplyScalar(0.25), FROST, 0.25, 0.4); // a few fine embers
+      }, end() { world.remove(trailM, head); trailM.geometry.dispose(); } };
+    }
     const head = headSprite(HOT.clone(), 1.6);
     return { dur: 1.5, update(k, dt) {
       const e = fx.easeInOut(k);
@@ -1684,15 +1744,32 @@ export async function startScene({ canvas, kbd, reduced }) {
       world.remove(head);
     } };
   }
+  // Comet: the real Lovejoy head and tail (ISS photo), tail always pointing away from the sun, a soft real
+  // glare on the nucleus. Falls back to the drawn head, ion line and dust while the images load.
   function comet(to, onArrive) {
     const start = to.clone().add(new THREE.Vector3(16, 10, -14));
     const mid = to.clone().add(new THREE.Vector3(9, 1, 4));
     const curve = new THREE.QuadraticBezierCurve3(start, mid, to);
+    const anti = SUN.clone().negate();
+    if (rfx.ready("comet") && rfx.ready("glint")) {
+      const body = rfx.cometBody(); world.add(body);
+      const coma = rfx.glint("glint", new THREE.Color(0.8, 0.9, 1.0), 0.7, 0); world.add(coma);
+      return { dur: 3.4, update(k) {
+        const p = curve.getPoint(fx.easeOut(k));
+        const fade = Math.min(1, k / 0.12) * (k > 0.85 ? (1 - k) / 0.15 : 1);
+        body.userData.place(p, anti, 5.5 * (0.6 + 0.4 * fade));
+        body.material.uniforms.uOpacity.value = 0.75 * fade;
+        coma.position.copy(p); coma.material.uniforms.uOpacity.value = 0.9 * fade;
+      }, end() {
+        world.remove(body, coma); body.geometry.dispose();
+        rfx.flash(to.clone(), { size: 0.8, color: new THREE.Color(0.75, 0.85, 1.0), dur: 0.8 });
+        onArrive?.();
+      } };
+    }
     const head = headSprite(ICE.clone().multiplyScalar(2.6), 1.3);
     const ion = new THREE.Line(new THREE.BufferGeometry().setFromPoints([v3(), v3()]), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     ion.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array([0.55, 0.75, 1.0, 0, 0, 0]), 3));
     world.add(ion);
-    const anti = SUN.clone().negate();
     return { dur: 3.4, update(k) {
       const p = curve.getPoint(fx.easeOut(k));
       head.position.copy(p);
@@ -1891,7 +1968,26 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   // Hostile ships: one per waiting question (up to 4), hovering near the edges of our view.
+  // Their rest points are kept in screen space (NDC), clamped every frame to stay clear of the KPI strip,
+  // the readout screens under it, the side handle and the caption, sized by the craft's projected size.
   const HOVER = [[-0.62, 0.42], [0.62, 0.42], [-0.66, -0.25], [0.66, -0.25]];
+  const HOSTILE_D = 5, HOSTILE_SIZE = 0.62;
+  function hoverNdc(slot, out = new THREE.Vector2()) {
+    const [hx, hy] = HOVER[slot];
+    const pxPerUnit = H / (2 * HOSTILE_D * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    const half = (HOSTILE_SIZE * 0.5 + 0.18) * pxPerUnit + 8;          // craft + idle bob + a margin
+    const k = sumPlate.rect;
+    let top = k.y + k.h;                                               // KPI numbers and labels
+    if (fm.phone) top = Math.max(top, fm.y0 + 80 + 56 + 46);           // the two readout screens under them
+    else { const r = readoutSlots()[0]; if (r) top = Math.max(top, r.y + 44); }
+    const bot = fm.y1 - (fm.phone ? 96 : 60);                          // speech caption / bottom strip
+    const left = fm.x0 + 10, right = (fm.phone ? Math.min(fm.x1, handlePlate.rect.x) : fm.x1) - 10;
+    let x = (hx * 0.5 + 0.5) * W, y = (-hy * 0.5 + 0.5) * H;
+    y = Math.min(Math.max(y, top + half), Math.max(top + half, bot - half));
+    x = Math.min(Math.max(x, left + half), right - half);
+    return out.set((x / W) * 2 - 1, 1 - (y / H) * 2);
+  }
+  const ndcTmp = new THREE.Vector2(), ndcTop = new THREE.Vector2();
   let hostileBadge = null;
   function syncHostiles(instant) {
     const qs = allQuestions();
@@ -1905,8 +2001,13 @@ export async function startScene({ canvas, kbd, reduced }) {
       const sl = [0, 1, 2, 3].find((k) => !used.has(k)) ?? 0;
       const g = rfx.dress(makeHostile(), "hostile", { size: 0.62, dim: 0.5, warm: 0.55 }); world.add(g);
       const tgt = targetFor(issue.assigneeAgentId, company.prefix);
-      const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: instant || reduced || !tgt ? "hover" : "arrive", t: 0, from: tgt ? tgt().clone() : viewPoint(0, 0, 30), fire: 2 + Math.random() * 4 };
-      g.position.copy(h.state === "hover" ? viewPoint(...HOVER[sl], 5) : h.from);
+      const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: instant || reduced || !tgt ? "hover" : "arrive", t: 0, fire: 2 + Math.random() * 4, ndc: hoverNdc(sl), d: HOSTILE_D };
+      // Arrival starts where the asking moon is on screen (or off the near side edge), at its depth.
+      if (h.state === "arrive") {
+        const tp = tgt().clone(), pr = tp.clone().project(camera), dist = tp.distanceTo(camera.position);
+        h.from = pr.z < 1 && Math.abs(pr.x) < 1.2 && Math.abs(pr.y) < 1.2 ? { x: pr.x, y: pr.y, d: Math.min(30, dist) } : { x: Math.sign(HOVER[sl][0]) * 1.5, y: h.ndc.y, d: 12 };
+      }
+      g.position.copy(h.state === "hover" ? viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D) : viewPoint(h.from.x, h.from.y, h.from.d));
       hostiles.set(q.id, h);
       activeUntil = performance.now() + 3000;
     }
@@ -1920,23 +2021,37 @@ export async function startScene({ canvas, kbd, reduced }) {
   function updateHostiles(dt) {
     tracerT -= dt; tracerMat.opacity = Math.max(0, tracerT * 4);
     for (const [id, h] of hostiles) {
-      h.t += dt; const home = viewPoint(...HOVER[h.slot], 5).add(new THREE.Vector3(Math.sin(clock * 0.4 + h.slot) * 0.15, Math.cos(clock * 0.3 + h.slot) * 0.1, 0));
+      h.t += dt;
+      // Rest point in screen space, eased toward the clamped slot (a layout change glides, never jumps),
+      // so the craft stays put on screen while the camera moves and never drifts over the HUD.
+      h.ndc.lerp(hoverNdc(h.slot, ndcTmp), easeK(dt, 3));
+      const bob = reduced ? 0 : 1;
+      const home = viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D).add(v3().set(Math.sin(clock * 0.4 + h.slot) * 0.15 * bob, Math.cos(clock * 0.3 + h.slot) * 0.1 * bob, 0));
       h.g.userData.lights.forEach((l, i) => (l.visible = reduced || Math.floor(clock * 2 + i) % 3 !== 0));
       if (h.state === "arrive") {
         const k = Math.min(1, h.t / (3 * MOTION.ships)), e = smoother(k);
-        const p = h.from.clone().lerp(home, e); h.g.lookAt(camera.position); h.g.position.copy(p);
+        // Path in screen space (kept below the HUD's top band), depth eased from the moon's to the rest depth.
+        const yMax = Math.max(h.ndc.y, hoverNdc(0, ndcTop).y); // highest point clear of the HUD
+        const nx = h.from.x + (h.ndc.x - h.from.x) * e, ny = Math.min(h.from.y + (h.ndc.y - h.from.y) * e, yMax);
+        const p = viewPoint(nx, ny, h.from.d + (HOSTILE_D - h.from.d) * e).lerp(home, e * e);
+        h.g.lookAt(camera.position); h.g.position.copy(p);
         trail(p.clone().add(new THREE.Vector3(0, 0, -0.2)), new THREE.Color(1, 0.55, 0.2).multiplyScalar(1.4));
         if (k >= 1) { h.state = "hover"; h.t = 0; }
       } else if (h.state === "hover") {
-        h.g.position.lerp(home, easeK(dt, 3)); h.g.lookAt(camera.position);
+        h.g.position.copy(home); h.g.lookAt(camera.position);
         if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 5 + Math.random() * 6; const a = h.g.position, b = viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8);
           if (!shoot(a.clone(), b, false)) { tracer.geometry.attributes.position.setXYZ(0, a.x, a.y, a.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.25; } } }
       } else if (h.state === "retreat") {
-        const k = Math.min(1, h.t / (2 * MOTION.ships)); h.g.position.copy(h.from).add(new THREE.Vector3(0, 0, -30 * k * k)); h.g.rotation.z += dt * 2;
+        // Pull away into the distance along our line of sight: it shrinks toward its own screen point, clear of the HUD.
+        const k = Math.min(1, h.t / (2 * MOTION.ships)); h.g.position.copy(viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D + 30 * k * k)); h.g.rotation.z += dt * 2;
         if (k >= 1) { world.remove(h.g); hostiles.delete(id); }
       } else if (h.state === "dying") { explode(h.g.position.clone()); world.remove(h.g); hostiles.delete(id); }
     }
-    if (hostileBadge) hostileBadge.position.copy(viewPoint(0.62, 0.62, 5));
+    if (hostileBadge) { // just under the top-right craft, never on the KPI strip
+      const n = hoverNdc(1, ndcTmp), pxPerUnit = H / (2 * HOSTILE_D * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+      const y = (0.5 - n.y * 0.5) * H + (HOSTILE_SIZE * 0.5 + 0.12) * pxPerUnit + 14;
+      hostileBadge.position.copy(viewPoint(n.x, 1 - (2 * y) / H, HOSTILE_D));
+    }
     if (hostiles.size) activeUntil = Math.max(activeUntil, performance.now() + 100);
   }
 
@@ -2143,7 +2258,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (!ev.fx || reduced) return;
     const co = planetFor(ctx.company); const ao = ctx.agentId ? agentObjs.get(ctx.agentId) : null;
     const build = {
-      aurora: () => co && wrapT(pfx.aurora(co.center, co.radius)),
+      aurora: () => co && wrapT(pfx.aurora(co.center, co.radius, rfx, SUN)),
       beacon: () => co && wrapT(pfx.beacon(co.center, co.radius, dirOnPlanet(co, ao, ctx.label), camera, rfx)),
       supply: () => ao && wrapT(pfx.supply(() => ao.pos, ao.size, rfx)),
       clear: () => co && wrapT(pfx.clearSky(co.center, co.radius, dirOnPlanet(co, ao, ctx.label), rfx)),
@@ -2177,7 +2292,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       const blocked = c.issues.filter((i) => i.status === "blocked").slice(0, 3);
       for (const i of blocked) {
         const ao = agentObjs.get(i.assigneeAgentId);
-        want.set("storm:" + i.id, { label: `${i.identifier} · blocked`, issueId: i.id, make: () => pfx.storm(co.center, co.radius, dirOnPlanet(co, ao, i.id), reduced) });
+        want.set("storm:" + i.id, { label: `${i.identifier} · blocked`, issueId: i.id, make: () => pfx.storm(co.center, co.radius, dirOnPlanet(co, ao, i.id), reduced, rfx) });
       }
       for (const i of c.issues) {
         if (i.status !== "in_progress" || Date.now() - new Date(i.updatedAt).getTime() < 2 * 3600e3) continue;
@@ -2571,7 +2686,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // ---------------- render loop ----------------
   const perf = { frames: 0, ms: 0, avg: 0, tier: tier.name, gpu: tier.gpu };
   window.__observatory = perf;
-  if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { flights: () => flights, rfx, fire, explode, shoot, viewPoint, sendDrone, incomingPod, ufoArrive, companies: () => companyObjs, agents: () => agentObjs, hostiles: () => hostiles, goCompany, glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
+  if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { queueFx, meteor, comet, persist: () => persist, flights: () => flights, rfx, fire, explode, shoot, viewPoint, sendDrone, incomingPod, ufoArrive, companies: () => companyObjs, agents: () => agentObjs, hostiles: () => hostiles, goCompany, glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
   const resume = () => { if (paused) return; cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
   document.addEventListener("visibilitychange", resume);
@@ -2655,6 +2770,10 @@ export async function startScene({ canvas, kbd, reduced }) {
     camera.setViewOffset(W, H, viewOffset.x, viewOffset.y, W, H);
     camera.updateProjectionMatrix();
     warpMat.opacity = warpAmt * 0.6; warp.scale.z = 1 + warpAmt * 12; warp.visible = warpAmt > 0.01;
+    if (!warpRealMat.uniforms.map.value && rfx.ready("meteor")) warpRealMat.uniforms.map.value = rfx.texture("meteor");
+    if (warpRealMat.uniforms.map.value) { // subtle: thin, grey, faint
+      warpRealMat.uniforms.uOpacity.value = warpAmt * 1.1; warpReal.scale.z = warp.scale.z; warpReal.visible = warp.visible; warp.visible = false;
+    }
     if (bokeh) {
       bokeh.enabled = warpAmt > 0.05 || rig.speed > 4;
       if (bokeh.enabled) { bokeh.uniforms.focus.value = rig.dist; bokeh.uniforms.aperture.value = 0.00008 * Math.min(1, rig.speed / 20); }

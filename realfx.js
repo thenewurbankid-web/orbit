@@ -11,7 +11,9 @@ const CRAFT = {
   drone:   { cell: 0, nose: 0, engine: 0 },              // MarCO CubeSat
   fighter: { cell: 1, nose: Math.PI, engine: 0.42 },     // Parker Solar Probe, heat shield forward
   pod:     { cell: 2, nose: -Math.PI / 2, engine: 0.4 }, // TESS, cameras up
-  hostile: { cell: 3, nose: Math.PI / 2, engine: 0, face: true }, // New Horizons, dish toward us
+  // New Horizons: its white dish faces us and the render is lit flat, so its highlights are rolled off hard
+  // (knee) and the whole craft sits lower (gain) to read like the others under the scene's single sun.
+  hostile: { cell: 3, nose: Math.PI / 2, engine: 0, face: true, gain: 0.72, knee: 0.3 }, // New Horizons, dish toward us
   ufo:     { cell: 4, nose: 0, engine: 0, face: true },  // Juno
 };
 
@@ -41,6 +43,7 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
     loads[name] = cache.get(url).then((t) => { if (t) tex[name] = t; return t; });
   }
   load("explosion"); load("glint"); load("flare"); load("streak"); load("laser"); load("craft", "webp");
+  load("aurora"); load("lightning"); load("comet"); load("meteor"); // aurora curtain, storm bolt, comet, meteor trail
   const ready = (n) => !!tex[n];
 
   // Procedural stand-in for the beam profile until the photo arrives (a soft Gaussian line).
@@ -173,11 +176,25 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
   }
 
   // ---------- beams: a real laser beam's measured profile, stretched between two points ----------
-  function beamMesh(color, width) {
+  // A camera-facing ribbon between two points (u along a→b, v across); set(a, b, w) moves it.
+  function ribbon(mat, width, order = 6) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(12), 3));
     geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 1, 0, 1, 1]), 2));
     geo.setIndex([0, 2, 1, 1, 2, 3]);
+    const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = order;
+    const side = new THREE.Vector3(), dir = new THREE.Vector3(), toCam = new THREE.Vector3(), mid = new THREE.Vector3();
+    m.userData.set = (a, b, w = width) => {
+      dir.subVectors(b, a); mid.addVectors(a, b).multiplyScalar(0.5); toCam.subVectors(camera.position, mid);
+      side.crossVectors(dir, toCam).normalize().multiplyScalar(w);
+      const p = geo.attributes.position;
+      p.setXYZ(0, a.x - side.x, a.y - side.y, a.z - side.z); p.setXYZ(1, a.x + side.x, a.y + side.y, a.z + side.z);
+      p.setXYZ(2, b.x - side.x, b.y - side.y, b.z - side.z); p.setXYZ(3, b.x + side.x, b.y + side.y, b.z + side.z);
+      p.needsUpdate = true;
+    };
+    return m;
+  }
+  function beamMesh(color, width) {
     const mat = new THREE.ShaderMaterial({
       ...additive, side: THREE.DoubleSide,
       uniforms: { map: { value: tex.laser ?? softLine }, uColor: { value: new THREE.Color(color) }, uOpacity: { value: 0 }, uHead: { value: 1 }, uTail: { value: 0 }, uTime: { value: 0 } },
@@ -191,15 +208,43 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
         }`,
     });
     if (!tex.laser) loads.laser.then((t) => { if (t) mat.uniforms.map.value = t; });
-    const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = 6;
-    const side = new THREE.Vector3(), dir = new THREE.Vector3(), toCam = new THREE.Vector3(), mid = new THREE.Vector3();
-    m.userData.set = (a, b, w = width) => {
-      dir.subVectors(b, a); mid.addVectors(a, b).multiplyScalar(0.5); toCam.subVectors(camera.position, mid);
-      side.crossVectors(dir, toCam).normalize().multiplyScalar(w);
-      const p = geo.attributes.position;
-      p.setXYZ(0, a.x - side.x, a.y - side.y, a.z - side.z); p.setXYZ(1, a.x + side.x, a.y + side.y, a.z + side.z);
-      p.setXYZ(2, b.x - side.x, b.y - side.y, b.z - side.z); p.setXYZ(3, b.x + side.x, b.y + side.y, b.z + side.z);
-      p.needsUpdate = true;
+    return ribbon(mat, width);
+  }
+
+  // ---------- meteors and comets: a real meteor's streak (Perseid, NASA) and a real comet (Lovejoy from the ISS) ----------
+  // Trail: the photographed streak's colour and width, tapered so it is brightest at the head and the train fades behind.
+  function meteorTrail(width) {
+    const mat = new THREE.ShaderMaterial({
+      ...additive, side: THREE.DoubleSide,
+      uniforms: { map: { value: tex.meteor ?? softLine }, uColor: { value: new THREE.Color(1, 1, 1) }, uOpacity: { value: 0 }, uU: { value: new THREE.Vector2(0, 1) }, uHead: { value: 0.75 } },
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `uniform sampler2D map; uniform vec3 uColor; uniform float uOpacity, uHead; uniform vec2 uU; varying vec2 vUv;
+        void main() {
+          vec3 c = texture2D(map, vec2(mix(uU.x, uU.y, vUv.x), vUv.y)).rgb;
+          float along = pow(vUv.x, 1.0 + uHead * 1.5) * smoothstep(1.0, 0.985, vUv.x); // train fades behind the head
+          gl_FragColor = vec4(c * uColor * along * uOpacity, 1.0);
+        }`,
+    });
+    if (!tex.meteor) loads.meteor.then((t) => { if (t) mat.uniforms.map.value = t; });
+    return ribbon(mat, width, 5);
+  }
+  // Comet: the photographed head and tail as one ribbon from the head outward (u = 0 at the head end).
+  const COMET_HEAD_U = 0.057, COMET_ASPECT = 5.4; // where the nucleus sits in comet.jpg; length / width of the crop
+  function cometBody() {
+    const mat = new THREE.ShaderMaterial({
+      ...additive, side: THREE.DoubleSide,
+      uniforms: { map: { value: tex.comet ?? null }, uColor: { value: new THREE.Color(1, 1, 1) }, uOpacity: { value: 0 } },
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `uniform sampler2D map; uniform vec3 uColor; uniform float uOpacity; varying vec2 vUv;
+        void main() { gl_FragColor = vec4(texture2D(map, vUv).rgb * uColor * uOpacity, 1.0); }`,
+    });
+    const m = ribbon(mat, 0.1, 5);
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    // Place: nucleus at `head`, tail of length `len` along `dir` (unit).
+    m.userData.place = (head, dir, len) => {
+      a.copy(head).addScaledVector(dir, -len * COMET_HEAD_U / (1 - COMET_HEAD_U));
+      b.copy(head).addScaledVector(dir, len);
+      m.userData.set(a, b, a.distanceTo(b) / (2 * COMET_ASPECT));
     };
     return m;
   }
@@ -229,15 +274,17 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
   // ---------- craft: NASA spacecraft renders as billboards, shaded toward the sun ----------
   const craftMat = (cell) => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, toneMapped: true,
-    uniforms: { map: { value: tex.craft ?? null }, uCell: { value: new THREE.Vector2(cell % 4, 1 - Math.floor(cell / 4)) }, uSun: shared.uSun, uOpacity: { value: 1 }, uDim: { value: 1 }, uWarm: { value: 0 },
+    uniforms: { map: { value: tex.craft ?? null }, uCell: { value: new THREE.Vector2(cell % 4, 1 - Math.floor(cell / 4)) }, uSun: shared.uSun, uOpacity: { value: 1 }, uDim: { value: 1 }, uWarm: { value: 0 }, uKnee: { value: 10 },
       uRot: { value: 0 }, uSize: { value: new THREE.Vector2(1, 1) }, uOff: { value: new THREE.Vector2() } },
     vertexShader: VERT,
-    fragmentShader: `uniform sampler2D map; uniform vec2 uCell; uniform vec3 uSun; uniform float uOpacity, uDim, uWarm; varying vec2 vUv; varying vec2 vS;
+    fragmentShader: `uniform sampler2D map; uniform vec2 uCell; uniform vec3 uSun; uniform float uOpacity, uDim, uWarm, uKnee; varying vec2 vUv; varying vec2 vS;
       void main() {
         vec4 t = texture2D(map, (uCell + vUv) / vec2(4.0, 2.0));
         if (t.a < 0.02) discard;
         float g = dot(t.rgb, vec3(0.3, 0.55, 0.15));
         vec3 c = mix(vec3(g), t.rgb, 0.7) * vec3(0.92, 0.96, 1.0);          // grade the bright renders down a little
+        float m = max(c.r, max(c.g, c.b));
+        if (m > uKnee) c *= (uKnee + (m - uKnee) * 0.22) / m;                // roll off near-white (New Horizons' dish)
         float side = clamp(dot(normalize(vS + 1e-4) * min(1.0, length(vS)), normalize(uSun.xy + 1e-4)), -1.0, 1.0);
         float lit = 0.3 + 0.85 * smoothstep(-0.9, 0.9, side) * (0.55 + 0.45 * max(uSun.z, 0.0) + 0.45 * length(uSun.xy));
         c *= lit * uDim;
@@ -249,7 +296,7 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
   // Puts the real craft on a procedural group (keeps its motion), hiding the drawn meshes once the image is in.
   function dress(g, kind, { size = 0.42, dim = 1, warm = 0, engineColor = null, hide = [] } = {}) {
     const spec = CRAFT[kind]; if (!spec) return g;
-    const mat = craftMat(spec.cell); mat.uniforms.uDim.value = dim; mat.uniforms.uWarm.value = warm;
+    const mat = craftMat(spec.cell); mat.uniforms.uDim.value = dim * (spec.gain ?? 1); mat.uniforms.uWarm.value = warm; mat.uniforms.uKnee.value = spec.knee ?? 10;
     const bb = board(mat, size); bb.renderOrder = 4; bb.visible = false;
     let eng = null;
     if (spec.engine && engineColor) { eng = glint("glint", engineColor, size * 0.55, 0.9); eng.renderOrder = 5; eng.visible = false; }
@@ -303,6 +350,6 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
     return live.length > 0;
   }
 
-  const api = { ready, loads, boom, flash, bolt, beam, glint, dress, update, get busy() { return live.length > 0; } };
+  const api = { ready, loads, boom, flash, bolt, beam, glint, dress, update, meteorTrail, cometBody, ribbon, texture: (n) => tex[n] ?? null, get busy() { return live.length > 0; } };
   return api;
 }

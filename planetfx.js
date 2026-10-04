@@ -15,31 +15,60 @@ function orientOutward(mesh, center, at) { mesh.position.copy(at); mesh.lookAt(a
 const add = (m) => { m.material.blending = THREE.AdditiveBlending; m.material.transparent = true; m.material.depthWrite = false; return m; };
 
 // ---------- persistent ----------
-export function storm(center, radius, dir, reduced) {
+export function storm(center, radius, dir, reduced, rfx = null) {
+  const bolt = rfx?.texture?.("lightning") ?? null;
   const mat = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
-    uniforms: { uTime: { value: 0 }, uFade: { value: 0 }, uFlash: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uFade: { value: 0 }, uFlash: { value: 0 }, uBolt: { value: bolt }, uHas: { value: bolt ? 1 : 0 }, uStrike: { value: new THREE.Vector4(0, 0, 0, 0.6) } },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
-    fragmentShader: `uniform float uTime, uFade, uFlash; varying vec2 vUv;
+    fragmentShader: `uniform float uTime, uFade, uFlash, uHas; uniform sampler2D uBolt; uniform vec4 uStrike; varying vec2 vUv;
       void main(){ vec2 p = vUv*2.-1.; float r = length(p); if (r > 1.0) discard;
         float a = atan(p.y, p.x) + r*6.0 - uTime*0.8;
         float arms = 0.5 + 0.5*sin(a*3.0);
         float dark = smoothstep(1.0, 0.15, r) * (0.55 + 0.45*arms);
         vec3 col = vec3(0.02, 0.02, 0.03);
-        float bolt = uFlash * smoothstep(0.06, 0.0, abs(p.x*0.6 + sin(p.y*9.0 + uTime*30.0)*0.08)) * step(r, 0.7);
-        gl_FragColor = vec4(col + vec3(0.85, 0.9, 1.0)*bolt*1.4, (dark*0.85 + bolt) * uFade); }`,
+        vec3 lit = vec3(0.0);
+        if (uHas > 0.5) {
+          // A real branched bolt (NOAA photo) at the strike point: it shows only through gaps in the cloud,
+          // while the flash lights the cloud from within, brightest where the cloud is thickest near the strike.
+          vec2 q = p - uStrike.xy; float c = cos(uStrike.z), s = sin(uStrike.z);
+          vec2 bu = vec2(c*q.x - s*q.y, s*q.x + c*q.y) / uStrike.w * vec2(0.5, 0.45) + 0.5;
+          float b = (bu.x > 0.0 && bu.x < 1.0 && bu.y > 0.0 && bu.y < 1.0) ? texture2D(uBolt, bu).r : 0.0;
+          float glow = exp(-dot(q, q) * 7.0);
+          float through = 0.2 + 0.8 * (1.0 - smoothstep(0.45, 0.9, dark));     // mostly hidden by cloud, clearest in the gaps
+          lit = vec3(0.82, 0.86, 1.0) * uFlash * (b * b * through * 2.2 + glow * (0.15 + 0.85 * dark) * 0.6);
+        } else {
+          float bolt = uFlash * smoothstep(0.06, 0.0, abs(p.x*0.6 + sin(p.y*9.0 + uTime*30.0)*0.08)) * step(r, 0.7);
+          lit = vec3(0.85, 0.9, 1.0) * bolt * 1.4;
+        }
+        float l = max(lit.r, max(lit.g, lit.b));
+        gl_FragColor = vec4(col + lit, clamp(dark*0.85 + l, 0.0, 1.0) * uFade); }`,
   });
+  if (!bolt && rfx?.loads?.lightning) rfx.loads.lightning.then((t) => { if (t) { mat.uniforms.uBolt.value = t; mat.uniforms.uHas.value = 1; } });
   const size = radius * 0.55;
   const m = new THREE.Mesh(new THREE.CircleGeometry(size, 48), mat);
   orientOutward(m, center, surfacePoint(center, radius, dir, 0.02));
-  let stopping = null, flashT = 0;
+  // Real strikes: a stroke and one to three return strokes over ~0.3 s (the flicker of real lightning),
+  // then quiet for a few seconds.
+  let stopping = null, flashT = 1 + Math.random() * 2, pulses = [], st = 0;
+  function strike() {
+    const u = mat.uniforms.uStrike.value, ang = Math.random() * Math.PI * 2, rr = 0.15 + Math.random() * 0.4;
+    u.set(Math.cos(ang) * rr, Math.sin(ang) * rr, (Math.random() - 0.5) * 1.2, 0.45 + Math.random() * 0.25);
+    st = 0; pulses = [[0, 1]];
+    let t0 = 0; for (let i = 0, n = 1 + Math.floor(Math.random() * 3); i < n; i++) { t0 += 0.05 + Math.random() * 0.08; pulses.push([t0, 0.45 + Math.random() * 0.45]); }
+  }
   return {
-    obj: m, label: true,
+    obj: m, label: true, strike,
     update(dt, t) {
       mat.uniforms.uTime.value = reduced ? 0 : t;
       const goal = stopping ? 0 : 1;
       mat.uniforms.uFade.value += (goal - mat.uniforms.uFade.value) * Math.min(1, dt * (stopping ? 2.5 : 1.2));
-      if (!reduced) { flashT -= dt; if (flashT <= 0) { flashT = 1.2 + Math.random() * 3; mat.uniforms.uFlash.value = 1; } mat.uniforms.uFlash.value *= 0.82; }
+      if (!reduced) {
+        flashT -= dt; if (flashT <= 0) { flashT = 2 + Math.random() * 4.5; strike(); }
+        st += dt; let f = 0;
+        for (const [p0, a] of pulses) { const x = st - p0; if (x >= 0) f = Math.max(f, a * Math.exp(-x / 0.045) * Math.min(1, x / 0.008 + 0.2)); }
+        mat.uniforms.uFlash.value = f;
+      }
       if (stopping && mat.uniforms.uFade.value < 0.02) { stopping(); return false; }
       return true;
     },
@@ -126,7 +155,8 @@ export function ice(moonMesh, reduced) {
 }
 
 // ---------- transient (k: 0 → 1) ----------
-export function aurora(center, radius) {
+export function aurora(center, radius, rfx = null, sun = null) {
+  if (rfx?.ready("aurora")) return auroraCurtain(center, radius, rfx.texture("aurora"), sun);
   const g = new THREE.Group();
   const rings = [0, 1, 2].map((k) => {
     const m = add(new THREE.Mesh(new THREE.TorusGeometry(radius * (0.42 + k * 0.1), 0.02, 6, 96), new THREE.MeshBasicMaterial({ color: TEAL.clone().lerp(WHITE, k * 0.2).multiplyScalar(1.6) })));
@@ -134,6 +164,60 @@ export function aurora(center, radius) {
   });
   g.position.copy(center);
   return { obj: g, dur: 3.2, update(k, dt, t) { rings.forEach((r, i) => { r.material.opacity = Math.sin(Math.PI * k) * (0.9 - i * 0.2) * (0.75 + 0.25 * Math.sin(t * 6 + i)); r.scale.setScalar(1 + k * 0.08); }); } };
+}
+
+// Aurora from a real photo (ISS-46, aurora over Canada): the curtain strip (green base, red tops) wrapped on a
+// thin vertical band around the planet's polar oval, rising from the surface. It is brightest edge-on at the
+// limb (the longest path through the glow), faint where it lies over the dayside, and drifts and folds slowly.
+function auroraCurtain(center, radius, map, sun) {
+  if (map.wrapS !== THREE.RepeatWrapping) { map.wrapS = THREE.RepeatWrapping; map.needsUpdate = true; } // the strip wraps around the oval
+  const N = 128, tilt = 0.18, colat = 0.55, h = 0.3; // oval ~31° from a slightly tilted pole; curtain 30 % of R tall
+  // Two ovals (north bright, south fainter), each a ring of quads from the surface up.
+  const V = (N + 1) * 2 * 2;
+  const pos = new Float32Array(V * 3), nrm = new Float32Array(V * 3), uv = new Float32Array(V * 2), gain = new Float32Array(V), idx = [];
+  const axisQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt, 0, tilt * 0.6));
+  const d = new THREE.Vector3();
+  [1, -1].forEach((hemi, hk) => {
+    const base = hk * (N + 1) * 2, uOff = hk * 0.37;
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      d.set(Math.sin(colat) * Math.cos(a), hemi * Math.cos(colat), Math.sin(colat) * Math.sin(a)).applyQuaternion(axisQ);
+      for (let j = 0; j < 2; j++) {
+        const r = radius * (1.005 + j * h), o = base + i * 2 + j;
+        pos.set([d.x * r, d.y * r, d.z * r], o * 3); nrm.set([d.x, d.y, d.z], o * 3); uv.set([(i / N) * 2 + uOff, j], o * 2); gain[o] = hemi > 0 ? 1 : 0.55;
+      }
+      if (i < N) { const o = base + i * 2; idx.push(o, o + 1, o + 2, o + 1, o + 3, o + 2); }
+    }
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2)); geo.setAttribute("aG", new THREE.BufferAttribute(gain, 1)); geo.setIndex(idx);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false,
+    uniforms: { map: { value: map }, uOpacity: { value: 0 }, uTime: { value: 0 }, uSun: { value: (sun ?? new THREE.Vector3(1, 0, 0)).clone().normalize() } },
+    vertexShader: `attribute float aG; varying vec2 vUv; varying vec3 vN; varying vec3 vV; varying float vDay; varying float vG;
+      uniform vec3 uSun;
+      void main() { vUv = uv; vG = aG; vec4 w = modelMatrix * vec4(position, 1.0); vec3 n = normalize(mat3(modelMatrix) * normal);
+        vN = n; vV = normalize(cameraPosition - w.xyz); vDay = dot(n, uSun);
+        gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform sampler2D map; uniform float uOpacity, uTime; varying vec2 vUv; varying vec3 vN; varying vec3 vV; varying float vDay; varying float vG;
+      void main() {
+        // Slow drift along the oval and gentle folding of the curtain (the rays sway, they do not spin).
+        float u = vUv.x + uTime * 0.006 + 0.012 * sin(vUv.x * 19.0 + uTime * 0.35) + 0.006 * sin(vUv.x * 53.0 - uTime * 0.6);
+        vec3 c = texture2D(map, vec2(u, vUv.y)).rgb;
+        float edge = 1.0 - abs(dot(vN, vV));                    // the curtain seen edge-on at the limb glows most
+        float limb = 0.35 + 0.65 * pow(edge, 1.5);
+        float night = 0.25 + 0.75 * smoothstep(0.3, -0.25, vDay); // washed out over the sunlit side
+        gl_FragColor = vec4(c * limb * night * vG * uOpacity, 1.0);
+      }`,
+  });
+  const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = 3;
+  m.position.copy(center);
+  // Fades in over ~1 s, holds, and fades out slowly; a slow breathing of brightness while it lasts.
+  return { obj: m, dur: 6, update(k, dt, t) {
+    const env = THREE.MathUtils.smoothstep(k, 0, 0.18) * (1 - THREE.MathUtils.smoothstep(k, 0.6, 1));
+    mat.uniforms.uTime.value = t;
+    mat.uniforms.uOpacity.value = 2.6 * env * (0.85 + 0.15 * Math.sin(t * 0.9));
+  }, end() { geo.dispose(); mat.dispose(); } };
 }
 
 export function beacon(center, radius, dir, camera, rfx = null) {
