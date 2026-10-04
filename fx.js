@@ -17,13 +17,14 @@ export function detectTier(renderer) {
   const mem = navigator.deviceMemory ?? 8;
   const cores = navigator.hardwareConcurrency ?? 8;
   let name = "high";
-  if (mobile) name = weakGpu || mem <= 3 || cores <= 4 ? "low" : "medium";
+  // Phones: iOS reports cores and memory unreliably, so only a known-weak GPU drops to "low".
+  if (mobile) name = weakGpu ? "low" : "medium";
   else if (weakGpu || mem <= 4) name = "medium";
   const forced = new URLSearchParams(location.search).get("tier");
   if (["low", "medium", "high"].includes(forced)) name = forced;
   const t = {
     high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 12 },
-    medium: { stars: 2600, particles: 380, bloomScale: 0.5, dpr: 1.5, frostOctaves: 1, transmission: false, nebula: 5, fpsIdle: 8 },
+    medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 10 },
     low: { stars: 1500, particles: 220, bloomScale: 0.35, dpr: 1, frostOctaves: 0, transmission: false, nebula: 3, fpsIdle: 6 },
   }[name];
   return { name, mobile, gpu, ...t };

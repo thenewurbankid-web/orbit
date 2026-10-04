@@ -15,6 +15,15 @@ const ZOOM_RATE = 0.04;                                 // the video's forward p
 
 // Cover layout that also crops the "✦" watermark (bottom-right, ~91% x / ~84% y) off screen.
 function videoRect(W, H, fx = 0.35, fy = 0.5) {
+  // Phones in portrait: centre the video (the title START plays straight in, so the door button
+  // needn't be on screen); still scale up enough to keep the watermark off screen.
+  if (H > W) {
+    let s = Math.max(W / VW, H / VH) * 1.02;
+    const w = VW * s, h = VH * s, left = (W - w) / 2, top = (H - h) / 2;
+    if (left + 0.88 * w >= W || top + 0.8 * h >= H) return { left, top, w, h };
+    const s2 = Math.max(s, W / (0.88 * VW) * 1.0, H / (0.8 * VH)); const w2 = VW * s2, h2 = VH * s2;
+    return { left: (W - w2) / 2, top: (H - h2) / 2, w: w2, h: h2 };
+  }
   // Smallest cover scale where the crop hides the watermark either horizontally or vertically.
   let s = Math.max(W / VW, H / VH) * 1.02;
   for (let i = 0; i < 40; i++, s *= 1.03) {
@@ -105,8 +114,18 @@ export function runIntro(opts) {
     const W = innerWidth, H = innerHeight;
     rect = videoRect(W, H);
     Object.assign(video.style, { left: rect.left + "px", top: rect.top + "px", width: rect.w + "px", height: rect.h + "px", transform: "none" });
+    // The source is 848x478; on phones it is scaled 2-4x. A touch of blur scaled to that, plus grain and a
+    // vignette (below), hides the pixels and reads as a filmic, slightly out-of-focus shot.
+    const up = (rect.w * (devicePixelRatio || 1)) / VW;
+    video.style.filter = up > 1.6 ? `blur(${Math.min(1.4, (up - 1.6) * 0.35 + 0.35).toFixed(2)}px) contrast(1.06) saturate(1.06)` : "contrast(1.04) saturate(1.04)";
     hot.style.left = hint.style.left = rect.left + BUTTON.x * rect.w + "px";
     hot.style.top = hint.style.top = rect.top + BUTTON.y * rect.h + "px";
+  }
+  if (!root.querySelector(".intro-film")) {
+    const film = document.createElement("div"); film.className = "intro-film";
+    Object.assign(film.style, { position: "absolute", inset: "0", pointerEvents: "none", zIndex: 1, mixBlendMode: "overlay", opacity: "0.35",
+      background: `radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%), url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")` });
+    video.insertAdjacentElement("afterend", film);
   }
   place();
   addEventListener("resize", place);

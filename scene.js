@@ -2425,6 +2425,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     look.x += (look.tx - look.x) * Math.min(1, dt * 3); look.y += (look.ty - look.y) * Math.min(1, dt * 3);
     if (Math.abs(look.tx - look.x) > 0.0005 || Math.abs(look.ty - look.y) > 0.0005) activeUntil = Math.max(activeUntil, now + 100);
     const yaw = rig.yaw + look.x * 0.06, pitch = rig.pitch + look.y * 0.045;
+    svgFrame.setGlare?.(look.x, look.y);
     camera.position.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(rig.dist).add(rig.target);
     camera.lookAt(rig.target);
     viewOffset.x += (viewOffset.tx - viewOffset.x) * (reduced ? 1 : 1 - Math.exp(-dt * 6));
