@@ -189,19 +189,46 @@ export async function startScene({ canvas, kbd, reduced }) {
     return anchor;
   }
   const _lp = new THREE.Vector3();
+  // Labels are clamped inside the frame's inner rectangle and placed by priority; a lower-priority
+  // label that would overlap one already placed is nudged above/below, or hidden.
+  function labelPriority(a) {
+    const k = a.userData.kind ?? "issue", id = a.userData.ownerId;
+    const sel = id && (id === view.company || id === view.agent || id === view.issue || id === hoverId);
+    return (sel ? 10 : 0) + ({ planet: 4, pct: 3.5, moon: 2, issue: 1 }[k] ?? 1);
+  }
   function placeLabels() {
+    const m = frameInset() + 6, top = W < 640 ? 80 : 96, bottom = H - frameInset() - 40;
+    const items = [];
     for (const a of labels) {
       const { plate, w, h } = a.userData.label;
       if (!a.parent) { glass.remove(plate.mesh); plate.tex.dispose(); labels.delete(a); continue; }
       const op = a.material.opacity;
       a.getWorldPosition(_lp).project(camera);
-      if (op < 0.02 || _lp.z > 1 || Math.abs(_lp.x) > 1.2 || Math.abs(_lp.y) > 1.2) { plate.mesh.visible = false; continue; }
-      const sx = Math.round((_lp.x * 0.5 + 0.5) * W - w / 2), sy = Math.round((-_lp.y * 0.5 + 0.5) * H - h / 2);
-      plate.mesh.position.set(sx + w / 2, -(sy + h / 2), 0);
-      plate.mat.uniforms.uOpacity.value = op;
-      plate.mesh.visible = true;
+      if (op < 0.02 || _lp.z > 1 || Math.abs(_lp.x) > 1.3 || Math.abs(_lp.y) > 1.3) { plate.mesh.visible = false; continue; }
+      items.push({ a, plate, w, h, op, cx: (_lp.x * 0.5 + 0.5) * W, cy: (-_lp.y * 0.5 + 0.5) * H, pr: labelPriority(a) });
+    }
+    items.sort((p, q) => q.pr - p.pr);
+    const placed = [];
+    const hits = (r) => placed.some((q) => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
+    for (const it of items) {
+      // Clamp into the inner rectangle: near an edge the label shifts back inside (flips to the inner side).
+      let x = Math.min(Math.max(it.cx - it.w / 2, m), W - m - it.w);
+      let y = Math.min(Math.max(it.cy - it.h / 2, top), bottom - it.h);
+      let r = { x, y, w: it.w, h: it.h };
+      if (hits(r)) {
+        const tries = [[0, it.h + 2], [0, -(it.h + 2)], [0, 2 * (it.h + 2)], [it.w / 2 + 6, 0], [-(it.w / 2 + 6), 0]];
+        const ok = tries.map(([dx, dy]) => ({ x: Math.min(Math.max(x + dx, m), W - m - it.w), y: Math.min(Math.max(y + dy, top), bottom - it.h), w: it.w, h: it.h })).find((c) => !hits(c));
+        if (!ok) { it.plate.mesh.visible = false; continue; }
+        r = ok;
+      }
+      placed.push(r);
+      const sx = Math.round(r.x), sy = Math.round(r.y);
+      it.plate.mesh.position.set(sx + it.w / 2, -(sy + it.h / 2), 0);
+      it.plate.mat.uniforms.uOpacity.value = it.op;
+      it.plate.mesh.visible = true;
     }
   }
+  let hoverId = null;
 
   // ---------------- planets: procedural dark surfaces ----------------
   const PLANET_LOOK = {
@@ -282,6 +309,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0xb8b8b8, transparent: true, opacity: 0.7, depthWrite: false }));
         ring.geometry.setDrawRange(0, 0);
         co = { group: new THREE.Group(), planet, rim, track, ring, ringShown: 0, spin: 0.02 + hash(c.prefix) * 0.02, label: textSprite(c.name, { px: 46, worldH: 1.3, color: C.ink, weight: 500 }), prefix: c.prefix, name: c.name };
+        Object.assign(co.label.userData, { kind: "planet", ownerId: c.prefix });
         co.group.add(planet, rim, track, ring, co.label);
         world.add(co.group);
         companyObjs.set(c.prefix, co);
@@ -301,7 +329,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         if (co.pct) co.group.remove(co.pct);
         co.pctText = cpText;
         co.pct = cpText ? textSprite(cpText, { px: 34, worldH: 0.55, color: C.ink2, weight: 400 }) : null;
-        if (co.pct) co.group.add(co.pct);
+        if (co.pct) { co.group.add(co.pct); Object.assign(co.pct.userData, { kind: "pct", ownerId: c.prefix }); }
       }
       if (co.pct) co.pct.position.copy(co.center).add(new THREE.Vector3(0, -co.radius - 3.0, 0));
       // Agents are moons orbiting the planet.
@@ -315,6 +343,7 @@ export async function startScene({ canvas, kbd, reduced }) {
           const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: psfSoft, color: new THREE.Color(0.8, 0.86, 0.92), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
           const orbitLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(96).map((p) => new THREE.Vector3(p.x, 0, p.y))), new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0.4, depthWrite: false }));
           const label = textSprite(a.name, { px: 40, worldH: 0.62, color: C.ink, weight: 500 });
+          Object.assign(label.userData, { kind: "moon", ownerId: a.id });
           world.add(moon, glow, orbitLine, label);
           ao = { id: a.id, moon, glow, orbitLine, label, company: c.prefix, h, pos: new THREE.Vector3(), phase: h * Math.PI * 2, speed: 0.025 + hash(a.id + "v") * 0.02,
             plane: new THREE.Euler(0.32 + (h - 0.5) * 0.25, 0, (hash(a.id + "z") - 0.5) * 0.3),
@@ -375,6 +404,7 @@ export async function startScene({ canvas, kbd, reduced }) {
           world.remove(io.label);
           const op = io.label.material.opacity;
           io.label = textSprite(pText, { px: 36, worldH: 0.42, color: C.ink2, font: MONO, weight: 500 });
+          Object.assign(io.label.userData, { kind: "issue", ownerId: i.id });
           io.label.material.opacity = op;
           world.add(io.label);
         }
@@ -1121,7 +1151,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // Frame: graphite with a near-invisible weave, chamfered 45° corners, notched top/bottom segments,
   // 1 px hairlines, a metal hairline lit from the scene's sun direction, micro-labels, rangefinder ticks
   // and a segmented overall-% line. Drawn on the overlay (sharp, outside post-processing).
-  function frameInset() { return W < 640 ? 9 : 16; }
+  function frameInset() { return W < 640 ? 14 : 26; }
   const weave = (() => {
     const c = document.createElement("canvas"); c.width = c.height = 6; const x = c.getContext("2d");
     x.fillStyle = "#0d0e10"; x.fillRect(0, 0, 6, 6);
@@ -1151,13 +1181,29 @@ export async function startScene({ canvas, kbd, reduced }) {
     // Body.
     x.beginPath(); pathOf(x, g.outer); pathOf(x, g.inner);
     x.fillStyle = x.createPattern(weave, "repeat"); x.fill("evenodd");
+    // Wide, low-opacity specular sweep across the graphite; follows the sun and shifts with mouse/tilt.
+    {
+      const cx = w * (0.5 + frameSun.x * 0.35 + look.x * 0.08), cy = h * (0.5 + frameSun.y * 0.35 + look.y * 0.08);
+      const gx = x.createLinearGradient(cx - w * 0.6 * frameSun.x, cy - h * 0.6 * frameSun.y, cx + w * 0.4 * frameSun.x, cy + h * 0.4 * frameSun.y);
+      gx.addColorStop(0, "rgba(255,255,255,0)"); gx.addColorStop(0.72, "rgba(210,218,226,0.035)"); gx.addColorStop(0.86, "rgba(225,232,240,0.075)"); gx.addColorStop(1, "rgba(255,255,255,0)");
+      x.fillStyle = gx; x.fill("evenodd");
+    }
     // Soft inner shadow into the view, then a 1 px dark gap: the view sits recessed behind glass.
     x.save(); x.beginPath(); pathOf(x, g.inner); x.clip();
     x.shadowColor = "rgba(0,0,0,0.85)"; x.shadowBlur = 18; x.lineWidth = 12; x.strokeStyle = "rgba(0,0,0,0.6)";
     x.beginPath(); pathOf(x, g.inner); x.stroke(); x.restore();
     x.lineWidth = 1; x.strokeStyle = "#000"; x.beginPath(); pathOf(x, g.inner); x.stroke();
-    // Outer hairline.
-    x.strokeStyle = "rgba(255,255,255,0.07)"; x.beginPath(); pathOf(x, g.outer.map(([a, b]) => [a + (a < w / 2 ? 0.5 : -0.5), b + (b < h / 2 ? 0.5 : -0.5)])); x.stroke();
+    // Outer bevel: crisp highlight on the sun-facing edges, darker on the opposite ones.
+    {
+      const o = g.outer.map(([a, b]) => [a + (a < w / 2 ? 0.5 : -0.5), b + (b < h / 2 ? 0.5 : -0.5)]);
+      for (let i = 0; i < o.length; i++) {
+        const A = o[i], B = o[(i + 1) % o.length], L = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
+        const nx = (B[1] - A[1]) / L, ny = -(B[0] - A[0]) / L; // outward normal (clockwise path)
+        const f = nx * frameSun.x + ny * frameSun.y;
+        x.strokeStyle = f > 0 ? `rgba(225,232,240,${0.06 + f * 0.28})` : `rgba(0,0,0,${0.35 - f * 0.4})`;
+        x.beginPath(); x.moveTo(A[0], A[1]); x.lineTo(B[0], B[1]); x.stroke();
+      }
+    }
     // Metal hairline on the inner edge, each segment lit by how much it faces the sun.
     const sweepK = (now - sweepAt) / 2200; // a slow light sweep along the hairline every ~30 s
     const per = []; let total = 0;
@@ -1238,6 +1284,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       x.fillStyle = "rgba(3,4,5,0.66)"; x.fillRect(0, 0, sl.w, hh);
       x.strokeStyle = "rgba(255,255,255,0.08)"; x.strokeRect(0.5, 0.5, sl.w - 1, hh - 1);
       x.strokeStyle = "rgba(235,240,245,0.42)"; x.beginPath(); x.moveTo(0, 0.5); x.lineTo(sl.w * 0.7, 0.5); x.stroke(); // one specular edge
+      { const st = x.createLinearGradient(sl.w * 0.55, 0, sl.w * 0.75, hh); st.addColorStop(0, "rgba(255,255,255,0)"); st.addColorStop(0.5, "rgba(255,255,255,0.045)"); st.addColorStop(1, "rgba(255,255,255,0)");
+        x.fillStyle = st; x.beginPath(); x.moveTo(sl.w * 0.58, 0); x.lineTo(sl.w * 0.66, 0); x.lineTo(sl.w * 0.56, hh); x.lineTo(sl.w * 0.48, hh); x.closePath(); x.fill(); } // faint glass streak
       x.fillStyle = r.tone === "+" ? "rgba(140,220,190,0.9)" : r.tone === "-" ? "rgba(225,160,90,0.95)" : "rgba(170,174,178,0.8)";
       x.fillRect(0, 0, 2, hh);
       x.font = `300 11.5px ${HUDF}`; x.textBaseline = "top";
@@ -1959,7 +2007,8 @@ export async function startScene({ canvas, kbd, reduced }) {
 
   // Subtle parallax: mouse position on desktop, device tilt on phones (iOS asks after a tap).
   if (!reduced) {
-    canvas.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && e.clientY > H - 34) wakePanel(); if (e.pointerType === "mouse" && pointers.size === 0) { look.tx = (e.clientX / W) * 2 - 1; look.ty = (e.clientY / H) * 2 - 1; kick(); } });
+    canvas.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && pointers.size === 0) { const pk = pickWorld(e.clientX, e.clientY, "agent"); const nh = pk?.id ?? null; if (nh !== hoverId) { hoverId = nh; kick(); } }
+      if (e.pointerType === "mouse" && e.clientY > H - 34) wakePanel(); if (e.pointerType === "mouse" && pointers.size === 0) { look.tx = (e.clientX / W) * 2 - 1; look.ty = (e.clientY / H) * 2 - 1; kick(); } });
     const onTilt = (e) => { if (e.gamma == null) return; look.tx = Math.max(-1, Math.min(1, e.gamma / 25)); look.ty = Math.max(-1, Math.min(1, ((e.beta ?? 45) - 45) / 25)); kick(); };
     const enableTilt = async () => {
       canvas.removeEventListener("pointerup", enableTilt);
@@ -2075,7 +2124,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       ao.moon.material.emissiveIntensity = a.live ? 0.12 * flare : a.queued ? 0.04 : 0;
       ao.glow.material.opacity = a.live ? 0.12 * flare : 0;
       ao.glow.scale.setScalar(ao.size * 2.4);
-      const show = lvl === "sky" ? (W < 640 ? 0 : 0.5) : ao.company === view.company ? 0.95 : 0.25;
+      const show = lvl === "sky" ? (hoverId === ao.id ? 0.8 : 0) : ao.company === view.company ? 0.95 : 0.25;
       ao.label.material.opacity += (show - ao.label.material.opacity) * 0.15;
       ao.orbitLine.material.opacity = ao.company === view.company ? 0.45 : 0.22;
     }
@@ -2126,7 +2175,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     {
       const sv = SUN.clone().transformDirection(camera.matrixWorldInverse);
       const sweeping = now >= sweepAt && now <= sweepAt + 2400;
-      if (sweeping || Math.abs(sv.x - frameSun.x) + Math.abs(-sv.y - frameSun.y) > 0.08 || Math.abs(look.x - frameLook) > 0.04 || Math.floor(now / 1000) !== frame._sec) { frame._sec = Math.floor(now / 1000); drawFrame(now); }
+      if (sweeping || Math.abs(sv.x - frameSun.x) + Math.abs(-sv.y - frameSun.y) > 0.08 || Math.abs(look.x - frameLook) > 0.03 || Math.abs(look.y - (frame._ly ?? 0)) > 0.03 || Math.floor(now / 1000) !== frame._sec) { frame._sec = Math.floor(now / 1000); frame._ly = look.y; drawFrame(now); }
       if (sweeping) activeUntil = Math.max(activeUntil, now + 50);
     }
     pumpReadouts(now);
