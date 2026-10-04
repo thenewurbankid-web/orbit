@@ -1,7 +1,6 @@
 // Intro: a door you press to enter. The video plays while we check for projects (Mac: the board API;
 // phone: the WebRTC pairing), then the video's window match-cuts onto the frame's opening.
 import { frameMetrics } from "./frame.js";
-import { startMusic, stopMusic } from "./music.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
@@ -256,9 +255,7 @@ export function runIntro(opts) {
     title.el.querySelector('[data-a="help"]').addEventListener("click", () => setHelp(true));
     title.el.querySelector('[data-a="back"]').addEventListener("click", () => setHelp(false));
     title.el.querySelector('[data-a="start2"]').addEventListener("click", startDoor);
-    // Music starts on the first tap or key on the title screen (browsers block audio before a gesture).
-    const kick = () => { startMusic(); removeEventListener("pointerdown", kick, true); removeEventListener("keydown", kick, true); };
-    addEventListener("pointerdown", kick, true); addEventListener("keydown", kick, true);
+
   }
   // Dissolve a frosted panel slowly (blur and opacity together) instead of the quick close.
   function dissolve(panel, ms = 700) {
@@ -272,21 +269,20 @@ export function runIntro(opts) {
   function startDoor() {
     if (!title) return;
     opts.sound?.("press"); // unlock audio on this gesture
-    stopMusic(1.4);
     dissolve(title);
     title = null;
     hot.style.display = hint.style.display = "";
   }
   showTitle();
   addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
-  skip.onclick = () => { if (title) { dissolve(title); title = null; stopMusic(0.8); } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
+  skip.onclick = () => { if (title) { dissolve(title); title = null; } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
 
   function choose(kind, immediate = false) {
     if (chosen && !immediate) return;
     chosen = kind === "skip" ? (chosen ?? "enter") : kind;
     panel.classList.remove("on");
     dissolve(sel);
-    if (title) { dissolve(title); title = null; stopMusic(0.8); }
+    if (title) { dissolve(title); title = null; }
     if (chosen === "demo") opts.onDemo();
     goToCut();
   }
