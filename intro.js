@@ -1,6 +1,7 @@
 // Intro: a door you press to enter. The video plays while we check for projects (Mac: the board API;
 // phone: the WebRTC pairing), then the video's window match-cuts onto the frame's opening.
 import { frameMetrics } from "./frame.js";
+import { startMusic, stopMusic } from "./music.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
@@ -57,6 +58,27 @@ export function runIntro(opts) {
       .intro .row button { font: inherit; font-size: 11px; letter-spacing: .08em; color: #dff3fb; background: rgba(120,200,240,.08); border: 1px solid rgba(160,225,255,.4); padding: 7px 12px; cursor: pointer; }
       .intro .row button.dim { border-color: rgba(255,255,255,.15); color: #aab4bc; background: transparent; }
       @keyframes introPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(140,215,255,.0); opacity: .55; } 50% { box-shadow: 0 0 18px 4px rgba(140,215,255,.35); opacity: 1; } }
+      /* Help inside the title card: the name shrinks and rises to the top, the buttons fade, cards slide up. */
+      .orbit-title { transition: transform 900ms cubic-bezier(.22,1,.36,1); transform-origin: 50% 0; }
+      .orbit-stage .orbit-btns { transition: opacity 400ms, transform 500ms cubic-bezier(.22,1,.36,1); }
+      .orbit-stage.helping .orbit-title { transform: translateY(var(--orbit-lift, -30vh)) scale(.36); }
+      .orbit-stage.helping .orbit-btns { opacity: 0 !important; transform: translateY(20px) !important; pointer-events: none; }
+      .orbit-help { position: absolute; inset: 120px 0 0 0; overflow-y: auto; opacity: 0; pointer-events: none; transition: opacity 500ms 250ms; padding: 0 8px 28px; }
+      .orbit-stage.helping .orbit-help { opacity: 1; pointer-events: auto; }
+      .orbit-back { position: fixed; top: 22px; left: 22px; background: none !important; border: 0 !important; color: #b9d6e0 !important; letter-spacing: .2em; font-size: 12px !important; cursor: pointer; }
+      .orbit-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 22px; max-width: 1100px; margin: 0 auto; }
+      .orbit-cards article { display: grid; gap: 12px; padding: 14px; border-radius: 14px; background: rgba(255,255,255,.035); box-shadow: inset 0 0 0 1px rgba(160,235,255,.14);
+        opacity: 0; transform: translateY(24px); transition: opacity 600ms, transform 700ms cubic-bezier(.22,1,.36,1); }
+      .orbit-cards article img { width: 100%; border-radius: 9px; display: block; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+      .orbit-cards article h3 { margin: 2px 0 6px; font-size: 14px; font-weight: 500; letter-spacing: .12em; color: #e8f7ff; text-transform: uppercase; }
+      .orbit-cards article p { margin: 0; color: #b9cdd6; font-size: 14px; line-height: 1.65; }
+      .orbit-stage.helping .orbit-cards article { opacity: 1; transform: none; }
+      .orbit-stage.helping .orbit-cards article:nth-child(1) { transition-delay: 350ms; } .orbit-stage.helping .orbit-cards article:nth-child(2) { transition-delay: 450ms; }
+      .orbit-stage.helping .orbit-cards article:nth-child(3) { transition-delay: 550ms; } .orbit-stage.helping .orbit-cards article:nth-child(4) { transition-delay: 650ms; }
+      .orbit-stage.helping .orbit-cards article:nth-child(5) { transition-delay: 750ms; }
+      .orbit-help-start { display: flex; justify-content: center; margin-top: 26px; }
+      .orbit-help-start button { width: min(320px, 80vw); height: 52px; border-radius: 12px; border: 1px solid rgba(160,235,255,.55); background: rgba(255,255,255,.035); color: #e6f7fc; letter-spacing: .36em; font-size: 15px; cursor: pointer; box-shadow: 0 0 10px rgba(120,220,255,.22); }
+      .orbit-help-start button:hover { border-color: rgba(190,242,255,.8); box-shadow: 0 0 16px rgba(120,220,255,.35); }
       @media (prefers-reduced-motion: reduce) { .intro .hot { animation: none; opacity: .9; } }
     </style>
     <video muted playsinline preload="metadata" poster="assets/intro-poster.jpg"></video>
@@ -198,13 +220,24 @@ export function runIntro(opts) {
       @keyframes orbit-ripple { to { transform: scale(36); opacity: 0; } }
       .orbit-btns.settled button.primary { animation: orbit-hum 2.8s ease-in-out infinite; }
       @keyframes orbit-hum { 50% { box-shadow: 0 0 16px rgba(120,220,255,.32), inset 0 0 12px rgba(120,220,255,.12); } }
-      @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after, .orbit-btns .liq { animation: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
+      @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after, .orbit-btns .liq, .orbit-title, .orbit-cards article, .orbit-help { animation: none !important; transition: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
     document.head.appendChild(st);
   }
     hot.style.display = hint.style.display = "none";
     const btn = 'style="width:100%"';
-    title = frostPanel(`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:40px">
+    title = frostPanel(`<div class="orbit-stage" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:40px;position:relative">
       <div class="orbit-title"><span style="--i:0">O</span><span style="--i:1">R</span><span style="--i:2">B</span><span style="--i:3">I</span><span style="--i:4">T</span></div>
+      <div class="orbit-help" aria-hidden="true">
+        <button class="orbit-back" data-a="back">← BACK</button>
+        <div class="orbit-cards">
+          <article><img src="assets/help/overview.jpg" alt="The Orbit view: three project planets with KPIs at the top"><div><h3>Projects are planets</h3><p>Each Paperclip project you pick is a planet. The numbers across the top show agents working, issues in progress, blocked, and questions waiting on you.</p></div></article>
+          <article><img src="assets/help/planet.jpg" alt="A planet with its agent moons and issue satellites"><div><h3>Agents are moons, issues are satellites</h3><p>Tap a planet to fly in. Its agents orbit as moons, and each issue is a satellite with a thin arc showing its rough % done.</p></div></article>
+          <article><img src="assets/help/chat.jpg" alt="The chat panel next to an agent"><div><h3>Talk to an agent</h3><p>Tap a moon to see what that agent is doing and send it a message. It arrives as a comment on its issue.</p></div></article>
+          <article class="text"><div><h3>Events</h3><p>UFO: an agent starts work · Meteor: an issue is done · Comet: a new issue · Hostile ship: a question waits for you (your answer flies out as a fighter) · Storm: blocked · Ice: no update for 2 h · Red alert: something critical.</p></div></article>
+          <article class="text"><div><h3>Setup</h3><p>Paperclip runs on this Mac at localhost:3100. Orbit runs as a Mac service at 127.0.0.1:4320. Use “+ project” to add projects, “pair phone” to follow on your phone, and Ollama on this Mac gives the rough estimates.</p></div></article>
+        </div>
+        <div class="orbit-help-start"><button class="primary" data-a="start2">START</button></div>
+      </div>
       <div class="orbit-btns" style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}><span class="liq"></span>START</button><button data-a="help" ${btn}><span class="liq"></span>HELP</button></div></div>`,
       { width: 10000, closeOnOutside: false });
     // Full-screen frosted card over the door.
@@ -216,7 +249,16 @@ export function runIntro(opts) {
       d.style.left = e.clientX - r.left + "px"; d.style.top = e.clientY - r.top + "px"; b.appendChild(d); setTimeout(() => d.remove(), 850);
     }));
     title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
-    title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
+    const stage = title.el.querySelector(".orbit-stage"), helpEl = title.el.querySelector(".orbit-help");
+    const tEl = title.el.querySelector(".orbit-title");
+    const measureLift = () => { const r = tEl.getBoundingClientRect(); stage.style.setProperty("--orbit-lift", `${26 - r.top}px`); };
+    const setHelp = (on) => { if (on && !stage.classList.contains("helping")) measureLift(); stage.classList.toggle("helping", on); helpEl.setAttribute("aria-hidden", on ? "false" : "true"); if (on) helpEl.scrollTop = 0; };
+    title.el.querySelector('[data-a="help"]').addEventListener("click", () => setHelp(true));
+    title.el.querySelector('[data-a="back"]').addEventListener("click", () => setHelp(false));
+    title.el.querySelector('[data-a="start2"]').addEventListener("click", startDoor);
+    // Music starts on the first tap or key on the title screen (browsers block audio before a gesture).
+    const kick = () => { startMusic(); removeEventListener("pointerdown", kick, true); removeEventListener("keydown", kick, true); };
+    addEventListener("pointerdown", kick, true); addEventListener("keydown", kick, true);
   }
   // Dissolve a frosted panel slowly (blur and opacity together) instead of the quick close.
   function dissolve(panel, ms = 700) {
@@ -230,20 +272,21 @@ export function runIntro(opts) {
   function startDoor() {
     if (!title) return;
     opts.sound?.("press"); // unlock audio on this gesture
+    stopMusic(1.4);
     dissolve(title);
     title = null;
     hot.style.display = hint.style.display = "";
   }
   showTitle();
   addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
-  skip.onclick = () => { if (title) { dissolve(title); title = null; } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
+  skip.onclick = () => { if (title) { dissolve(title); title = null; stopMusic(0.8); } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
 
   function choose(kind, immediate = false) {
     if (chosen && !immediate) return;
     chosen = kind === "skip" ? (chosen ?? "enter") : kind;
     panel.classList.remove("on");
     dissolve(sel);
-    if (title) { dissolve(title); title = null; }
+    if (title) { dissolve(title); title = null; stopMusic(0.8); }
     if (chosen === "demo") opts.onDemo();
     goToCut();
   }
