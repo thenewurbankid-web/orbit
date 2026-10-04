@@ -156,13 +156,13 @@ export function runIntro(opts) {
     const st = document.createElement("style"); st.id = "orbit-title-css";
     st.textContent = `
       .orbit-title { font: 200 clamp(88px, 15vw, 190px)/1 "JetBrains Mono", ui-monospace, Menlo, monospace; letter-spacing: .38em; padding-left: .38em; color: #fff; white-space: nowrap;
-        text-shadow: 0 0 8px rgba(255,255,255,.9), 0 0 26px rgba(200,235,255,.6), 0 0 60px rgba(150,210,255,.35); animation: orbit-glow 3.2s ease-in-out 2.2s infinite; }
+        text-shadow: 0 0 8px rgba(255,255,255,.9), 0 0 26px rgba(200,235,255,.6), 0 0 60px rgba(150,210,255,.35); animation: orbit-glow 7s cubic-bezier(.45,0,.55,1) 2.2s infinite alternate; }
       .orbit-title span { display: inline-block; opacity: 0; filter: blur(14px); transform: translateY(18px) scale(1.15);
         animation: orbit-in 1.1s cubic-bezier(.22,1,.36,1) forwards; animation-delay: calc(.25s + var(--i) * .14s); }
       .orbit-btns { opacity: 0; transform: translateY(10px); animation: orbit-up .7s cubic-bezier(.22,1,.36,1) 1.35s forwards; }
       @keyframes orbit-in { 60% { opacity: 1; } to { opacity: 1; filter: blur(0); transform: none; } }
       @keyframes orbit-up { to { opacity: 1; transform: none; } }
-      @keyframes orbit-glow { 50% { text-shadow: 0 0 10px rgba(255,255,255,1), 0 0 34px rgba(210,240,255,.75), 0 0 80px rgba(150,210,255,.45); } }
+      @keyframes orbit-glow { 100% { text-shadow: 0 0 10px rgba(255,255,255,1), 0 0 34px rgba(210,240,255,.75), 0 0 80px rgba(150,210,255,.45); } }
       /* After settling: a slow light sweep through the letters on top of the glow pulse. */
       .orbit-title span { background: linear-gradient(100deg, #fff 40%, #dff6ff 48%, #fff 56%) 0 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; }
       .orbit-title.settled span { animation: orbit-sheen 6s ease-in-out infinite; animation-delay: calc(var(--i) * .12s); opacity: 1; filter: none; transform: none; }
@@ -172,35 +172,32 @@ export function runIntro(opts) {
          brighter; HELP runs at lower power. */
       @property --orbit-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
       .orbit-btns button { position: relative; overflow: visible; isolation: isolate; border-radius: 12px !important; height: 56px; padding: 0 !important;
-        font-size: 15px !important; letter-spacing: .36em !important; color: #e9fdff !important; background: rgba(4,14,20,.55) !important;
-        border: 1.5px solid #8ff0ff !important;
-        text-shadow: 0 0 4px #bff7ff, 0 0 12px rgba(80,220,255,.9), 0 0 24px rgba(80,220,255,.6);
-        box-shadow: 0 0 6px rgba(120,235,255,.9), 0 0 18px rgba(60,200,255,.55), 0 0 40px rgba(60,200,255,.25), inset 0 0 12px rgba(80,220,255,.35);
+        font-size: 15px !important; letter-spacing: .36em !important; color: #e6f7fc !important; background: rgba(255,255,255,.035) !important; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+        border: 1px solid rgba(160,235,255,.55) !important;
+        text-shadow: 0 0 6px rgba(150,230,255,.55);
+        box-shadow: 0 0 10px rgba(120,220,255,.22), inset 0 0 10px rgba(120,220,255,.08);
         animation: orbit-poweron 1.1s steps(1, end) 1.35s both; transition: box-shadow .25s, letter-spacing .3s, transform .25s; }
-      .orbit-btns button::before { content: ""; position: absolute; inset: -2px; border-radius: 13px; padding: 2px; pointer-events: none; filter: blur(.6px) drop-shadow(0 0 6px #b9f6ff);
+      .orbit-btns button::before { content: ""; position: absolute; inset: -2px; border-radius: 13px; padding: 2px; pointer-events: none; filter: blur(.5px) drop-shadow(0 0 3px rgba(185,246,255,.6)); opacity: .55;
         background: conic-gradient(from var(--orbit-a), transparent 0 84%, rgba(200,250,255,.0) 86%, #ffffff 90%, rgba(140,240,255,.9) 92%, transparent 95%);
         -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
         animation: orbit-current 2.6s linear infinite; }
       .orbit-btns button::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
         background: repeating-linear-gradient(180deg, rgba(160,240,255,.08) 0 1px, transparent 1px 3px); transition: opacity .25s; }
       .orbit-btns button .liq { display: none; }
-      .orbit-btns button:not(.primary) { border-color: rgba(143,240,255,.55) !important; color: #bfe9f2 !important;
-        text-shadow: 0 0 6px rgba(80,220,255,.5); box-shadow: 0 0 5px rgba(120,235,255,.45), 0 0 16px rgba(60,200,255,.2), inset 0 0 8px rgba(80,220,255,.18); }
-      .orbit-btns button:not(.primary)::before { animation-duration: 5s; opacity: .5; }
+      .orbit-btns button:not(.primary) { border-color: rgba(160,235,255,.28) !important; color: #b9d6e0 !important; text-shadow: none; box-shadow: none; }
+      .orbit-btns button:not(.primary)::before { animation-duration: 6s; opacity: .25; }
       .orbit-btns button:hover, .orbit-btns button:focus-visible { outline: none; letter-spacing: .44em !important; transform: translateY(-1px);
-        box-shadow: 0 0 8px #c8f8ff, 0 0 24px rgba(80,220,255,.85), 0 0 60px rgba(60,200,255,.45), inset 0 0 18px rgba(80,220,255,.5); }
+        border-color: rgba(190,242,255,.8) !important; box-shadow: 0 0 14px rgba(120,220,255,.35), 0 0 30px rgba(80,200,255,.15), inset 0 0 14px rgba(120,220,255,.14); }
       .orbit-btns button:hover::after, .orbit-btns button:focus-visible::after { opacity: 1; }
       .orbit-btns button:hover::before, .orbit-btns button:focus-visible::before { animation-duration: .9s; }
-      .orbit-btns button:active { transform: scale(.985); box-shadow: 0 0 12px #fff, 0 0 40px rgba(120,235,255,1), 0 0 90px rgba(60,200,255,.6), inset 0 0 26px rgba(160,240,255,.7); }
+      .orbit-btns button:active { transform: scale(.985); box-shadow: 0 0 18px rgba(170,240,255,.5), inset 0 0 18px rgba(160,240,255,.25); }
       .orbit-btns .ripple { position: absolute; z-index: -1; border-radius: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; pointer-events: none;
         background: radial-gradient(circle, rgba(220,250,255,.8), rgba(120,235,255,0) 70%); animation: orbit-ripple .6s cubic-bezier(.22,1,.36,1) forwards; }
       @keyframes orbit-current { to { --orbit-a: 360deg; } }
       @keyframes orbit-poweron { 0% { opacity: .15; } 8% { opacity: 1; } 14% { opacity: .3; } 22% { opacity: 1; } 30% { opacity: .55; } 40%, 100% { opacity: 1; } }
       @keyframes orbit-ripple { to { transform: scale(36); opacity: 0; } }
       .orbit-btns.settled button.primary { animation: orbit-hum 2.8s ease-in-out infinite; }
-      @keyframes orbit-hum { 50% { box-shadow: 0 0 7px rgba(150,240,255,1), 0 0 22px rgba(60,200,255,.7), 0 0 50px rgba(60,200,255,.32), inset 0 0 14px rgba(80,220,255,.45); }
-                             51% { box-shadow: 0 0 4px rgba(150,240,255,.7), 0 0 14px rgba(60,200,255,.45), 0 0 34px rgba(60,200,255,.2), inset 0 0 10px rgba(80,220,255,.3); }
-                             53% { box-shadow: 0 0 7px rgba(150,240,255,1), 0 0 22px rgba(60,200,255,.7), 0 0 50px rgba(60,200,255,.32), inset 0 0 14px rgba(80,220,255,.45); } }
+      @keyframes orbit-hum { 50% { box-shadow: 0 0 16px rgba(120,220,255,.32), inset 0 0 12px rgba(120,220,255,.12); } }
       @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after, .orbit-btns .liq { animation: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
     document.head.appendChild(st);
   }
@@ -239,13 +236,14 @@ export function runIntro(opts) {
   }
   showTitle();
   addEventListener("keydown", function onKey(e) { if (finished) return removeEventListener("keydown", onKey); if (e.key === "Enter" && !started) { if (title) startDoor(); else press(); } if (e.key === "Escape") choose(chosen ?? "skip", true); });
-  skip.onclick = () => { if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
+  skip.onclick = () => { if (title) { dissolve(title); title = null; } if (!started) { started = true; check(); hot.style.display = hint.style.display = "none"; video.currentTime = WINDOW_VISIBLE_AT + 3; } else video.currentTime = Math.max(video.currentTime, WINDOW_VISIBLE_AT + 3); };
 
   function choose(kind, immediate = false) {
     if (chosen && !immediate) return;
     chosen = kind === "skip" ? (chosen ?? "enter") : kind;
     panel.classList.remove("on");
     dissolve(sel);
+    if (title) { dissolve(title); title = null; }
     if (chosen === "demo") opts.onDemo();
     goToCut();
   }
