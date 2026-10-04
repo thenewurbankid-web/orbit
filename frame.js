@@ -48,7 +48,7 @@ function el(tag, attrs = {}, parent) {
 export function createFrame(host) {
   let glassGrad = null, glare = { x: 0, y: 0 };
   // Slide the glass gloss with device tilt or pointer (-1..1 each), so it reads as a real reflection.
-  function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.09).toFixed(3)} ${(glare.y * 0.06).toFixed(3)})`); }
+  function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.04).toFixed(3)} ${(glare.y * 0.03).toFixed(3)})`); }
   const svg = el("svg", { "aria-hidden": "true", "shape-rendering": "geometricPrecision" });
   Object.assign(svg.style, { position: "fixed", inset: "0", width: "100vw", height: "100%", pointerEvents: "none", zIndex: "2" });
   host.appendChild(svg);
@@ -79,10 +79,9 @@ export function createFrame(host) {
     el("stop", { offset: 0, "stop-color": "#24272b" }, body); el("stop", { offset: 0.5, "stop-color": "#1c1f22" }, body); el("stop", { offset: 1, "stop-color": "#141619" }, body);
     const lipG = el("linearGradient", { id: "obs-lip", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
     el("stop", { offset: 0, "stop-color": "#5b6168" }, lipG); el("stop", { offset: 1, "stop-color": "#33383d" }, lipG);
-    const glassG = el("linearGradient", { id: "obs-glass", x1: 0, y1: 0, x2: 1, y2: 1 }, defs);
-    // A soft gloss band plus a thinner second reflection; both slide with device tilt / pointer (setGlare).
-    el("stop", { offset: 0.16, "stop-color": "rgba(255,255,255,0)" }, glassG); el("stop", { offset: 0.25, "stop-color": "rgba(215,235,250,0.055)" }, glassG); el("stop", { offset: 0.33, "stop-color": "rgba(255,255,255,0)" }, glassG);
-    el("stop", { offset: 0.40, "stop-color": "rgba(255,255,255,0)" }, glassG); el("stop", { offset: 0.43, "stop-color": "rgba(225,240,252,0.03)" }, glassG); el("stop", { offset: 0.46, "stop-color": "rgba(255,255,255,0)" }, glassG);
+    // Glass gloss: one soft highlight in the top-left corner only, very subtle; it drifts a little with tilt.
+    const glassG = el("radialGradient", { id: "obs-glass", cx: 0.06, cy: 0.02, r: 0.42, gradientUnits: "objectBoundingBox" }, defs);
+    el("stop", { offset: 0, "stop-color": "rgba(225,240,252,0.045)" }, glassG); el("stop", { offset: 0.45, "stop-color": "rgba(225,240,252,0.015)" }, glassG); el("stop", { offset: 1, "stop-color": "rgba(255,255,255,0)" }, glassG);
     glassGrad = glassG; applyGlare();
     const edgeG = el("radialGradient", { id: "obs-edge", cx: 0.5, cy: 0.5, r: 0.75 }, defs);
     el("stop", { offset: 0.75, "stop-color": "rgba(0,0,0,0)" }, edgeG); el("stop", { offset: 1, "stop-color": "rgba(0,0,0,0.35)" }, edgeG);
