@@ -23,8 +23,8 @@ export function detectTier(renderer) {
   const forced = new URLSearchParams(location.search).get("tier");
   if (["low", "medium", "high"].includes(forced)) name = forced;
   const t = {
-    high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 12 },
-    medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 10 },
+    high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 60 },
+    medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 30 },
     low: { stars: 1500, particles: 220, bloomScale: 0.35, dpr: 1, frostOctaves: 0, transmission: false, nebula: 3, fpsIdle: 6 },
   }[name];
   return { name, mobile, gpu, ...t };
