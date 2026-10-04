@@ -1836,7 +1836,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
   // A new question: a brief amber anamorphic streak across the window (real lens flare), not a drawn ring.
   function pulse() {
-    rfx.flash(viewPoint(0, 0.2, 6), { name: "streak", size: 9, aspect: 14, rot: 0, color: new THREE.Color(1.0, 0.62, 0.3), dur: 1.6 });
+    rfx.flash(viewPoint(0, 0.2, 6), { name: "streak", size: 2.6, aspect: 9, rot: 0, color: new THREE.Color(0.42, 0.38, 0.34), dur: 1.1 });
     return null;
   }
 
@@ -1984,7 +1984,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     snd.play("ping");
     const tgt = targetFor(agentId, company);
     if (!tgt || reduced || flights.length >= 6) return onArrive();
-    const g = rfx.dress(makePod(amber), "pod", { size: 0.36, engineColor: amber ? new THREE.Color(1, 0.6, 0.3) : new THREE.Color(0.8, 0.88, 1) }); world.add(g);
+    const g = rfx.dress(makePod(amber), "pod", { size: 0.36, engineColor: amber ? new THREE.Color(0.75, 0.66, 0.55) : new THREE.Color(0.8, 0.88, 1) }); world.add(g);
     const from = tgt().clone(); const side = (Math.random() - 0.5) * 1.2;
     const f = { g, kind: "pod", t: 0, update: (dt) => {
       f.t += dt; const k = Math.min(1, f.t / (2.4 * MOTION.ships)), e = smoother(k);
@@ -1993,9 +1993,9 @@ export async function startScene({ canvas, kbd, reduced }) {
       const p = new THREE.QuadraticBezierCurve3(from, mid, to).getPoint(e);
       orient(g, g.position, p.clone().add(p.clone().sub(g.position)), Math.sin(k * 6) * 0.3);
       g.position.copy(p); g.scale.setScalar(0.6 + k * 0.5);
-      trail(p, amber ? new THREE.Color(1, 0.65, 0.3).multiplyScalar(1.5) : new THREE.Color(0.9, 0.92, 0.95));
+      trail(p, amber ? new THREE.Color(0.62, 0.55, 0.48).multiplyScalar(0.6) : new THREE.Color(0.9, 0.92, 0.95));
       g.userData.beacon.visible = Math.floor(f.t * 4) % 2 === 0;
-      if (k >= 1) { sparks(p, amber ? new THREE.Color(1, 0.6, 0.25).multiplyScalar(1.6) : new THREE.Color(0.9, 0.95, 1).multiplyScalar(1.3)); onArrive(); return false; }
+      if (k >= 1) { sparks(p, amber ? new THREE.Color(0.7, 0.62, 0.52).multiplyScalar(0.7) : new THREE.Color(0.9, 0.95, 1).multiplyScalar(1.3)); onArrive(); return false; }
       return true;
     } };
     flights.push(f); activeUntil = performance.now() + 3000;
