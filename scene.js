@@ -11,6 +11,35 @@ import { BokehPass } from "three/addons/postprocessing/BokehPass.js";
 import { openConnectPanel, openHelpPanel, companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, messagesFor, toggleList, startPairing, applyAnswer, stopPairing, answerQuestion, copyText, helperBrief, helperAsk, helperLines, helperState } from "./app.js";
 import * as fx from "./fx.js";
 import { bakePlanet, bakeNebula, NEBULA_CENTRES, KIND } from "./planets.js";
+
+// Real surfaces: NASA-based planet maps (Solar System Scope, CC BY 4.0, see assets/planets/CREDITS.md). They load in
+// the background; the procedural surface shows until then. Each photo is also its own bump map, so relief catches
+// the sun along the terminator.
+const PHOTO = { [KIND.desert]: "mars", [KIND.rocky]: "mercury", [KIND.ocean]: "earth", [KIND.moon]: "moon", [KIND.ice]: "ice", [KIND.gas]: "jupiter" };
+const photoCache = new Map();
+function photoTex(name, renderer, small) {
+  const url = `assets/planets/${name}${small ? "-1k" : ""}.jpg`;
+  if (!photoCache.has(url)) photoCache.set(url, new THREE.TextureLoader().loadAsync(url).then((t) => {
+    t.colorSpace = THREE.SRGBColorSpace; t.wrapS = THREE.RepeatWrapping; t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); return t;
+  }).catch(() => null));
+  return photoCache.get(url);
+}
+function usePhoto(mat, kind, renderer, small, bump) {
+  const name = PHOTO[kind]; if (!name) return;
+  photoTex(name, renderer, small).then((t) => {
+    if (!t) return;
+    mat.map = t; mat.normalMap = null;
+    if (bump) { mat.bumpMap = t; mat.bumpScale = bump; }
+    mat.needsUpdate = true;
+  });
+}
+function usePhotoClouds(mat, renderer, small) {
+  photoTex("earth-clouds", renderer, small).then((t) => {
+    if (!t) return;
+    t.colorSpace = THREE.NoColorSpace;
+    mat.map = null; mat.alphaMap = t; mat.color.setRGB(0.95, 0.97, 1); mat.opacity = 0.9; mat.needsUpdate = true;
+  });
+}
 import * as pfx from "./planetfx.js";
 import { createFrame, frameMetrics } from "./frame.js";
 import { makeDrone, makeFighter, makePod, makeHostile } from "./carriers.js";
@@ -314,8 +343,10 @@ export async function startScene({ canvas, kbd, reduced }) {
         const maps = bakePlanet(renderer, kind, c.planet?.seed ?? hash(c.prefix) * 50, tier.mobile ? 1024 : 2048);
         // Matte: no specular hotspot, relief from the normal map along the terminator.
         const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), new THREE.MeshStandardMaterial({ map: maps.map, normalMap: maps.normalMap, normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1, metalness: 0 }));
+        usePhoto(planet.material, kind, renderer, tier.mobile, kind === KIND.gas ? 0 : kind === KIND.ocean ? 0.6 : 2.5);
         if (maps.clouds) {
           const clouds = new THREE.Mesh(new THREE.SphereGeometry(1.012, 96, 48), new THREE.MeshStandardMaterial({ map: maps.clouds, transparent: true, roughness: 1, metalness: 0, depthWrite: false }));
+          usePhotoClouds(clouds.material, renderer, tier.mobile);
           clouds.userData.clouds = true;
           planet.add(clouds);
         }
@@ -374,6 +405,8 @@ export async function startScene({ canvas, kbd, reduced }) {
           const h = hash(a.id);
           const mm = bakePlanet(renderer, KIND.moon, h * 80, tier.mobile ? 256 : 512);
           const moon = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.MeshStandardMaterial({ map: mm.map, normalMap: mm.normalMap, normalScale: new THREE.Vector2(0.7, 0.7), roughness: 1, metalness: 0, emissive: new THREE.Color(0.75, 0.82, 0.9), emissiveIntensity: 0 }));
+          usePhoto(moon.material, KIND.moon, renderer, true, 3);
+          moon.material.color.setHSL(0.08 + h * 0.5, 0.12, 0.72 + hash(a.id + "b") * 0.28); // each moon a slightly different rock
           const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: psfSoft, color: new THREE.Color(0.8, 0.86, 0.92), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
           const orbitLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(96).map((p) => new THREE.Vector3(p.x, 0, p.y))), new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0.4, depthWrite: false }));
           const label = textSprite(a.name, { px: 40, worldH: 0.62, color: C.ink, weight: 500 });
