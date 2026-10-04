@@ -167,35 +167,57 @@ export function runIntro(opts) {
       .orbit-title span { background: linear-gradient(100deg, #fff 40%, #dff6ff 48%, #fff 56%) 0 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; }
       .orbit-title.settled span { animation: orbit-sheen 6s ease-in-out infinite; animation-delay: calc(var(--i) * .12s); opacity: 1; filter: none; transform: none; }
       @keyframes orbit-sheen { 0%, 70% { background-position: 100% 0; } 85% { background-position: 0 0; } 100% { background-position: 0 0; } }
-      /* Fluidic buttons: a slow liquid glow drifting inside; on hover a liquid wave rises to fill the button. */
-      .orbit-btns button { position: relative; overflow: hidden; isolation: isolate; border: 0 !important; border-radius: 16px !important; color: #eaf8ff !important;
-        background: rgba(12,20,28,.35) !important; box-shadow: inset 0 0 0 1px rgba(170,228,255,.38), 0 0 0 0 rgba(120,200,240,0); transition: box-shadow .4s, letter-spacing .4s; }
-      .orbit-btns button > * , .orbit-btns button { z-index: 1; }
-      .orbit-btns button::before { content: ""; position: absolute; inset: -40%; z-index: -1; filter: blur(14px); opacity: .55;
-        background: radial-gradient(35% 45% at 30% 50%, rgba(110,200,255,.45), transparent 70%), radial-gradient(30% 40% at 70% 55%, rgba(90,255,210,.28), transparent 70%);
-        animation: orbit-liquid 7s ease-in-out infinite alternate; }
-      .orbit-btns button::after { content: ""; position: absolute; left: -25%; width: 150%; aspect-ratio: 1; top: 135%; z-index: -1; border-radius: 42%;
-        background: rgba(140,215,255,.22); transition: top .9s cubic-bezier(.22,1,.36,1); animation: orbit-wave 6s linear infinite; }
-      .orbit-btns button:hover, .orbit-btns button:focus-visible { letter-spacing: .38em !important; outline: none;
-        box-shadow: inset 0 0 0 1px rgba(200,240,255,.8), 0 0 26px rgba(120,200,240,.28); }
-      .orbit-btns button:hover::after, .orbit-btns button:focus-visible::after { top: 18%; }
-      @keyframes orbit-liquid { 0% { transform: translate(-6%, -4%) rotate(0deg); } 50% { transform: translate(8%, 5%) rotate(25deg); } 100% { transform: translate(-4%, 6%) rotate(-15deg); } }
-      @keyframes orbit-wave { to { transform: rotate(360deg); } }
-      .orbit-btns.settled button.primary { animation: orbit-breathe 3.2s ease-in-out infinite; }
-      @keyframes orbit-breathe { 50% { box-shadow: inset 0 0 0 1px rgba(190,235,255,.75), 0 0 20px rgba(120,200,240,.2); } }
-      @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after { animation: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
+      /* Electric neon buttons: a glowing neon tube outline, a spark of current racing around the edge,
+         a quick flicker as they power on, a hum-like glow pulse, and a surge on hover/press. START is lit
+         brighter; HELP runs at lower power. */
+      @property --orbit-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+      .orbit-btns button { position: relative; overflow: visible; isolation: isolate; border-radius: 12px !important; height: 56px; padding: 0 !important;
+        font-size: 15px !important; letter-spacing: .36em !important; color: #e9fdff !important; background: rgba(4,14,20,.55) !important;
+        border: 1.5px solid #8ff0ff !important;
+        text-shadow: 0 0 4px #bff7ff, 0 0 12px rgba(80,220,255,.9), 0 0 24px rgba(80,220,255,.6);
+        box-shadow: 0 0 6px rgba(120,235,255,.9), 0 0 18px rgba(60,200,255,.55), 0 0 40px rgba(60,200,255,.25), inset 0 0 12px rgba(80,220,255,.35);
+        animation: orbit-poweron 1.1s steps(1, end) 1.35s both; transition: box-shadow .25s, letter-spacing .3s, transform .25s; }
+      .orbit-btns button::before { content: ""; position: absolute; inset: -2px; border-radius: 13px; padding: 2px; pointer-events: none; filter: blur(.6px) drop-shadow(0 0 6px #b9f6ff);
+        background: conic-gradient(from var(--orbit-a), transparent 0 84%, rgba(200,250,255,.0) 86%, #ffffff 90%, rgba(140,240,255,.9) 92%, transparent 95%);
+        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+        animation: orbit-current 2.6s linear infinite; }
+      .orbit-btns button::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
+        background: repeating-linear-gradient(180deg, rgba(160,240,255,.08) 0 1px, transparent 1px 3px); transition: opacity .25s; }
+      .orbit-btns button .liq { display: none; }
+      .orbit-btns button:not(.primary) { border-color: rgba(143,240,255,.55) !important; color: #bfe9f2 !important;
+        text-shadow: 0 0 6px rgba(80,220,255,.5); box-shadow: 0 0 5px rgba(120,235,255,.45), 0 0 16px rgba(60,200,255,.2), inset 0 0 8px rgba(80,220,255,.18); }
+      .orbit-btns button:not(.primary)::before { animation-duration: 5s; opacity: .5; }
+      .orbit-btns button:hover, .orbit-btns button:focus-visible { outline: none; letter-spacing: .44em !important; transform: translateY(-1px);
+        box-shadow: 0 0 8px #c8f8ff, 0 0 24px rgba(80,220,255,.85), 0 0 60px rgba(60,200,255,.45), inset 0 0 18px rgba(80,220,255,.5); }
+      .orbit-btns button:hover::after, .orbit-btns button:focus-visible::after { opacity: 1; }
+      .orbit-btns button:hover::before, .orbit-btns button:focus-visible::before { animation-duration: .9s; }
+      .orbit-btns button:active { transform: scale(.985); box-shadow: 0 0 12px #fff, 0 0 40px rgba(120,235,255,1), 0 0 90px rgba(60,200,255,.6), inset 0 0 26px rgba(160,240,255,.7); }
+      .orbit-btns .ripple { position: absolute; z-index: -1; border-radius: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; pointer-events: none;
+        background: radial-gradient(circle, rgba(220,250,255,.8), rgba(120,235,255,0) 70%); animation: orbit-ripple .6s cubic-bezier(.22,1,.36,1) forwards; }
+      @keyframes orbit-current { to { --orbit-a: 360deg; } }
+      @keyframes orbit-poweron { 0% { opacity: .15; } 8% { opacity: 1; } 14% { opacity: .3; } 22% { opacity: 1; } 30% { opacity: .55; } 40%, 100% { opacity: 1; } }
+      @keyframes orbit-ripple { to { transform: scale(36); opacity: 0; } }
+      .orbit-btns.settled button.primary { animation: orbit-hum 2.8s ease-in-out infinite; }
+      @keyframes orbit-hum { 50% { box-shadow: 0 0 7px rgba(150,240,255,1), 0 0 22px rgba(60,200,255,.7), 0 0 50px rgba(60,200,255,.32), inset 0 0 14px rgba(80,220,255,.45); }
+                             51% { box-shadow: 0 0 4px rgba(150,240,255,.7), 0 0 14px rgba(60,200,255,.45), 0 0 34px rgba(60,200,255,.2), inset 0 0 10px rgba(80,220,255,.3); }
+                             53% { box-shadow: 0 0 7px rgba(150,240,255,1), 0 0 22px rgba(60,200,255,.7), 0 0 50px rgba(60,200,255,.32), inset 0 0 14px rgba(80,220,255,.45); } }
+      @media (prefers-reduced-motion: reduce) { .orbit-title, .orbit-title span, .orbit-btns, .orbit-btns button, .orbit-btns button::before, .orbit-btns button::after, .orbit-btns .liq { animation: none !important; opacity: 1 !important; filter: none !important; transform: none !important; } }`;
     document.head.appendChild(st);
   }
     hot.style.display = hint.style.display = "none";
-    const btn = 'style="width:100%;font-size:16px;padding:16px 0;letter-spacing:.3em"';
+    const btn = 'style="width:100%"';
     title = frostPanel(`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:40px">
       <div class="orbit-title"><span style="--i:0">O</span><span style="--i:1">R</span><span style="--i:2">B</span><span style="--i:3">I</span><span style="--i:4">T</span></div>
-      <div class="orbit-btns" style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}>START</button><button data-a="help" ${btn}>HELP</button></div></div>`,
+      <div class="orbit-btns" style="display:grid;gap:12px;width:min(320px,80vw)"><button class="primary" data-a="start" ${btn}><span class="liq"></span>START</button><button data-a="help" ${btn}><span class="liq"></span>HELP</button></div></div>`,
       { width: 10000, closeOnOutside: false });
     // Full-screen frosted card over the door.
     Object.assign(title.el.style, { left: "0", top: "0", width: "100%", height: "100%", maxHeight: "none", transform: "none", borderRadius: "0", border: "0", padding: "24px", boxSizing: "border-box" });
     requestAnimationFrame(() => { if (title) title.el.style.transform = "none"; }); // frostPanel re-centres on its first frame
     setTimeout(() => { title?.el.querySelector(".orbit-title")?.classList.add("settled"); title?.el.querySelector(".orbit-btns")?.classList.add("settled"); }, 2300);
+    title.el.querySelectorAll(".orbit-btns button").forEach((b) => b.addEventListener("pointerdown", (e) => {
+      const r = b.getBoundingClientRect(), d = document.createElement("span"); d.className = "ripple";
+      d.style.left = e.clientX - r.left + "px"; d.style.top = e.clientY - r.top + "px"; b.appendChild(d); setTimeout(() => d.remove(), 850);
+    }));
     title.el.querySelector('[data-a="start"]').addEventListener("click", startDoor);
     title.el.querySelector('[data-a="help"]').addEventListener("click", () => opts.help?.());
   }
