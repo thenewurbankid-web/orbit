@@ -7,7 +7,7 @@ const VW = 848, VH = 478;
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.2; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
+const CUT_T = 7.05; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -372,25 +372,37 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    // Freeze on the settled, still-dark window and zoom into it while our scene fades in behind:
-    // it reads as the camera pushing through the window into our sky.
-    video.pause();
-    fadeOutVideo();
+    // Let the window light up: the video keeps playing into its warp flash while our light grows from
+    // the same point and gently pushes in; at full white we swap to our scene, which appears as the
+    // light fades. The light hides the video's own planets as they start to appear.
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
     tr = { frame, W, H };
     canvas.style.transition = ""; canvas.style.opacity = "1";
-    root.style.background = "transparent";
-    frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
-    const DUR = reduced ? 0 : 1300;
-    video.style.transformOrigin = "50% 43%";
-    video.style.transition = `transform ${DUR}ms cubic-bezier(.65,0,.35,1), opacity ${DUR * 0.6}ms ease-in ${DUR * 0.35}ms`;
-    requestAnimationFrame(() => { video.style.transform = "scale(1.7)"; video.style.opacity = "0"; });
-    const t0 = performance.now();
-    const fadeFrame = () => { const k = Math.min(1, (performance.now() - t0 - DUR * 0.45) / (DUR * 0.6)); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
-    reduced ? frame?.setOpacity(1) : fadeFrame();
-    opts.emit?.("introFocus", true); // our camera flies forward into a planet at the same time
-    setTimeout(finish, DUR + 50);
+    const RISE = reduced ? 0 : 700, FALL = reduced ? 0 : 1500;
+    const light = document.createElement("div");
+    Object.assign(light.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
+      background: "radial-gradient(circle at 50% 30%, #ffffff 0%, #f4fbff 22%, rgba(220,240,255,.96) 45%, rgba(190,225,255,.9) 75%, rgba(170,210,245,.85) 100%)",
+      transform: "scale(.6)", transformOrigin: "50% 30%",
+      transition: `opacity ${RISE}ms cubic-bezier(.45,0,.55,1), transform ${RISE}ms cubic-bezier(.33,0,.67,1)` });
+    document.body.appendChild(light);
+    video.style.transformOrigin = "50% 30%";
+    video.style.transition = `transform ${RISE}ms cubic-bezier(.33,0,.67,1)`;
+    requestAnimationFrame(() => { light.style.opacity = "1"; light.style.transform = "scale(1.4)"; video.style.transform = "scale(1.25)"; });
+    setTimeout(() => {
+      fadeOutVideo();
+      video.style.opacity = "0";
+      root.style.background = "transparent";
+      frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
+      opts.emit?.("introFocus", true);
+      light.style.transition = `opacity ${FALL}ms cubic-bezier(.16,1,.3,1)`;
+      light.style.opacity = "0";
+      const t0 = performance.now();
+      const fadeFrame = () => { const k = Math.min(1, (performance.now() - t0 - 300) / 1000); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
+      reduced ? frame?.setOpacity(1) : fadeFrame();
+      setTimeout(() => light.remove(), FALL + 100);
+      finish();
+    }, RISE + 40);
   }
   function finish() {
     opts.sound?.("enter"); // our ship sound starts only once the video is over

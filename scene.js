@@ -1085,6 +1085,13 @@ export async function startScene({ canvas, kbd, reduced }) {
   const kpiPrev = new Map(); const kpiFlash = new Map();
   const panel = { bright: 0 };
   const VOLS = [0.2, 0.4, 0.6, 0.8, 1];
+  // KPI taps: fly to the first matching issue in board order (its satellite, or its planet if it has none).
+  function goFirstIssue(test) {
+    for (const c of store.board?.companies ?? []) {
+      const i = c.issues.find(test);
+      if (i) { if (issueObjs.has(i.id)) goIssue(i.id); else if (companyObjs.has(c.prefix)) goCompany(c.prefix); return; }
+    }
+  }
   function kpis() {
     const s = summary();
     const agentsWorking = store.agents.filter((a) => a.live).length;
@@ -1094,12 +1101,12 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (const c of store.board?.companies ?? []) { const p = companyProgress(c); if (p != null) { const n = c.issues.filter((i) => OPEN.includes(i.status)).length; sw += n; sp += n * p; } }
     const overall = sw ? Math.round(sp / sw) + "%" : "–";
     const all = [
-      { k: "work", v: agentsWorking, label: "agents working" },
-      { k: "prog", v: s.inProgress, label: "in progress" },
-      { k: "block", v: s.blocked, label: "blocked" },
+      { k: "work", v: agentsWorking, label: "agents working", tap: () => { const a = store.agents.find((x) => x.live); if (a) goAgent(a.id); } },
+      { k: "prog", v: s.inProgress, label: "in progress", tap: () => goFirstIssue((i) => i.status === "in_progress") },
+      { k: "block", v: s.blocked, label: "blocked", tap: () => goFirstIssue((i) => i.status === "blocked") },
       { k: "wait", v: s.waiting, label: "waiting on you", amber: s.waiting > 0, tap: () => { const q = allQuestions()[0]; if (q) goIssue(q.issue.id); } },
-      { k: "done", v: doneToday, label: "done today" },
-      { k: "pct", v: overall, label: "overall · rough estimate" },
+      { k: "done", v: doneToday, label: "done today", tap: () => goFirstIssue((i) => i.status === "done" && i.completedAt && new Date(i.completedAt).toDateString() === today) },
+      { k: "pct", v: overall, label: "overall · rough estimate", tap: () => goSky() },
     ];
     if (W >= 1100) return all;
     if (W >= 640) return all.filter((x) => x.k !== "pct" && x.k !== "done"); // overall % is in the corner HUD
