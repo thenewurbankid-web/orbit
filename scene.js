@@ -2380,6 +2380,9 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   canvas.addEventListener("pointerdown", (e) => {
+    // Touch: no compatibility mousedown afterwards, which would take focus from the hidden text field and
+    // close the phone keyboard right after a tap on a text field opened it.
+    if (e.pointerType !== "mouse") e.preventDefault();
     canvas.setPointerCapture?.(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t0: performance.now() });
     kick();
