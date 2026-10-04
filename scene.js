@@ -1796,18 +1796,22 @@ export async function startScene({ canvas, kbd, reduced }) {
     p.el.querySelector(".poc").onchange = async (ev) => {
       try { await act("projectPoc", { companyId: c.id, agentId: ev.target.value }); note.textContent = `Point of contact: ${ev.target.selectedOptions[0].textContent}`; } catch (e) { note.textContent = e.message; }
     };
+    let lastSend = 0;
     p.el.querySelector(".send").onclick = async (ev) => {
-      if (!real(ev)) return;
+      if (!real(ev) || performance.now() - lastSend < 1500) return; // no double sends
+      lastSend = performance.now();
       const text = p.el.querySelector(".msg").value.trim(); if (!text) { note.textContent = "Write a message first."; return; }
       try { const r = await act("projectMessage", { companyId: c.id, text }); readout(`▲ Sent to ${r.to}${r.issue ? " · " + r.issue : ""}`, "0"); p.el.querySelector(".msg").value = ""; note.textContent = `Sent to ${r.to}${r.issue ? ` as ${r.issue}` : ""}. It wakes them up.`; }
       catch (e) { note.textContent = e.message; }
     };
     const DESC = { pause: "Pause: agents stop picking up new work; anything running finishes.", stop: "Stop: pause, and cancel anything running now.", start: "Start: resume the agents and wake them." };
-    let pending = null;
+    let pending = null; // { action, at }
     p.el.querySelectorAll(".act").forEach((b) => (b.onclick = async (ev) => {
       if (!real(ev)) return;
       const action = b.dataset.a;
-      if (pending !== action) { pending = action; note.textContent = `${DESC[action]} Click ${b.textContent.trim()} again to confirm.`; return; }
+      // Two separate clicks: the confirming one must come at least 500 ms after the first, so a single
+      // click that gets delivered twice can never act on its own.
+      if (pending?.action !== action || performance.now() - pending.at < 500) { if (pending?.action !== action) { pending = { action, at: performance.now() }; note.textContent = `${DESC[action]} Click ${b.textContent.trim()} again to confirm.`; } return; }
       try {
         const r = await act("projectWork", { companyId: c.id, action });
         readout(action === "start" ? `▶ Work started · ${c.name}` : action === "pause" ? `⏸ Work paused · ${c.name}` : `■ Work stopped · ${c.name}`, "0");
