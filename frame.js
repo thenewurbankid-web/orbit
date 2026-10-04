@@ -5,13 +5,27 @@
 
 const NS = "http://www.w3.org/2000/svg";
 
+// Safe-area insets (notch, home indicator) from CSS env(), read through a hidden probe element.
+let safeProbe = null;
+export function safeInsets() {
+  if (typeof document === "undefined" || !document.body) return { t: 0, r: 0, b: 0, l: 0 };
+  if (!safeProbe) {
+    safeProbe = document.createElement("div");
+    safeProbe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)";
+    document.body.appendChild(safeProbe);
+  }
+  const cs = getComputedStyle(safeProbe), n = (v) => parseFloat(v) || 0;
+  return { t: n(cs.paddingTop), r: n(cs.paddingRight), b: n(cs.paddingBottom), l: n(cs.paddingLeft) };
+}
+
 // Final layout for a viewport, or the same shape fitted to a given opening {x0, y0, x1, y1}.
 export function frameMetrics(W, H, open = null) {
   const phone = W < 640;
+  const sa = open ? { t: 0, r: 0, b: 0, l: 0 } : safeInsets();
   const metal = phone ? 6 : 13, lip = phone ? 2 : 3;     // frame metal + bright lip
-  const strip = phone ? 24 : 28;                          // console strip height
-  const x0 = open ? open.x0 : metal + lip, x1 = open ? open.x1 : W - metal - lip;
-  const y0 = open ? open.y0 : metal + lip, y1 = open ? open.y1 : H - strip - metal - lip - (phone ? 4 : 6);
+  const strip = phone ? 30 : 28;                          // console strip height (phones: a comfortable touch target)
+  const x0 = open ? open.x0 : metal + lip + sa.l, x1 = open ? open.x1 : W - metal - lip - sa.r;
+  const y0 = open ? open.y0 : metal + lip + sa.t, y1 = open ? open.y1 : H - strip - metal - lip - (phone ? 4 : 6) - sa.b;
   const scale = (x1 - x0) / Math.max(1, W - 2 * (metal + lip));
   const ct = Math.round((phone ? 10 : Math.min(56, Math.max(28, (W - 2 * (metal + lip)) * 0.032))) * scale); // top corner cut
   const cb = Math.round(ct * 0.6);                                                                            // bottom corner cut

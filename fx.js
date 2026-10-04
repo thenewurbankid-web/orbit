@@ -74,8 +74,8 @@ export function psfTexture(size = 128, spikes = true) {
 // ---------------- starfield (three parallax shells) ----------------
 const starVert = `
 attribute float aSize; attribute vec3 aColor; attribute float aPhase;
-uniform float uTime; uniform float uPixelRatio; uniform float uTwinkle; uniform float uWarp; uniform float uBright; uniform vec3 uTint;
-varying vec3 vColor; varying float vSpike;
+uniform float uTime; uniform float uPixelRatio; uniform float uTwinkle; uniform float uWarp; uniform float uBright; uniform vec3 uTint; uniform float uStreak;
+varying vec3 vColor; varying float vSpike; varying vec2 vDir; varying float vStretch;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mv;
@@ -83,17 +83,27 @@ void main() {
   // Small flicker on about 12% of the stars.
   float tw = 1.0 + uTwinkle * 0.22 * step(0.88, aPhase) * sin(uTime * (1.6 + aPhase * 2.7) + aPhase * 40.0);
   vSpike = 0.0;
-  gl_PointSize = clamp((0.9 + min(aSize, 2.0) * 0.55) * uPixelRatio * (1.0 + uWarp * 0.6), 1.0, 4.0 * uPixelRatio);
+  // Camera flights: stars stretch along the line from the screen centre, more toward the edges and
+  // for nearer layers (uStreak is already scaled by depth), and settle back to points when it stops.
+  vec2 ndc = gl_Position.xy / max(gl_Position.w, 1e-4);
+  float rr = length(ndc);
+  vDir = rr > 1e-3 ? ndc / rr : vec2(1.0, 0.0);
+  vStretch = 1.0 + uStreak * min(rr, 1.4) * 5.0;
+  float base = clamp((0.9 + min(aSize, 2.0) * 0.55) * uPixelRatio * (1.0 + uWarp * 0.6), 1.0, 4.0 * uPixelRatio);
+  gl_PointSize = min(base * vStretch, 28.0 * uPixelRatio);
+  vStretch = gl_PointSize / base;
   // White, crisp, kept under the bloom threshold so stars never glow.
-  vColor = aColor * tw * min(0.88, 0.32 + min(aSize, 2.0) * 0.26) * uBright * uTint;
+  vColor = aColor * tw * min(0.88, 0.32 + min(aSize, 2.0) * 0.26) * uBright * uTint / sqrt(vStretch);
 }`;
 const starFrag = `
-varying vec3 vColor; varying float vSpike;
+varying vec3 vColor; varying float vSpike; varying vec2 vDir; varying float vStretch;
 void main() {
   vec2 p = gl_PointCoord * 2.0 - 1.0;
-  float r2 = dot(p, p);
-  float core = 1.0 - smoothstep(0.35, 0.8, sqrt(r2)); // sharp 1-2 px core
-  float a = core * (1.0 - smoothstep(0.75, 1.0, sqrt(r2))); // crisp point, no halo or spikes
+  vec2 d = vec2(vDir.x, -vDir.y); // point-sprite y runs down
+  float along = dot(p, d), across = dot(p, vec2(-d.y, d.x)) * vStretch;
+  float r = sqrt(along * along + across * across);
+  float core = 1.0 - smoothstep(0.35, 0.8, r); // sharp 1-2 px core
+  float a = core * (1.0 - smoothstep(0.75, 1.0, r)); // crisp point, no halo or spikes
   gl_FragColor = vec4(vColor * a, 1.0);
 }`;
 
@@ -128,7 +138,7 @@ export function createStarfield(tier, pixelRatio) {
     g.setAttribute("aPhase", new THREE.BufferAttribute(phase, 1));
     const m = new THREE.ShaderMaterial({
       vertexShader: starVert, fragmentShader: starFrag,
-      uniforms: { uTime: { value: 0 }, uPixelRatio: { value: pixelRatio }, uTwinkle: { value: 1 }, uWarp: { value: 0 }, uBright: { value: s.b ?? 1 }, uTint: { value: new THREE.Vector3(1, 1, 1) } },
+      uniforms: { uTime: { value: 0 }, uPixelRatio: { value: pixelRatio }, uTwinkle: { value: 1 }, uWarp: { value: 0 }, uBright: { value: s.b ?? 1 }, uStreak: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) } },
       blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
     });
     mats.push(m);
@@ -140,8 +150,9 @@ export function createStarfield(tier, pixelRatio) {
   return {
     group,
     setTint(r, g, b) { for (const m of mats) m.uniforms.uTint.value.set(r, g, b); },
-    update(t, warp, twinkle, camPos) {
-      for (const m of mats) { m.uniforms.uTime.value = t; m.uniforms.uWarp.value = warp; m.uniforms.uTwinkle.value = twinkle; }
+    // streak: 0..1 from the camera's forward speed; nearer layers (that follow the camera less) stretch more.
+    update(t, warp, twinkle, camPos, streak = 0) {
+      mats.forEach((m, i) => { m.uniforms.uTime.value = t; m.uniforms.uWarp.value = warp; m.uniforms.uTwinkle.value = twinkle; m.uniforms.uStreak.value = streak * (1 - shells[i].follow) ** 1.5; });
       // Parallax: nearer shells follow the camera a little less.
       group.children.forEach((p) => p.position.copy(camPos).multiplyScalar(p.userData.follow));
     },

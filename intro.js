@@ -4,11 +4,13 @@ import { frameMetrics } from "./frame.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
-const FLASH = { x: 0.6, y: 0.37 }; // zoom target: the ringed planet in the steady window shot (~8.8 s)
+// The white point: a star flares in the window at ~7.2 s, just before the warp and planets (~7.5 s).
+// Its position per video second (measured on the frames; the camera tilts down a little as it grows).
+const POINT = [[7.05, 0.5, 0.283], [7.2, 0.5, 0.283], [7.3, 0.5, 0.333], [7.4, 0.505, 0.342], [7.5, 0.5, 0.383], [7.6, 0.5, 0.4]];
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 8.8; // the warp has ended and the camera is steady on the window full of planets
+const CUT_T = 7.1; // last dark frame before the video's own flash; we freeze here and draw our own
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -443,37 +445,58 @@ export function runIntro(opts) {
   function transition() {
     if (finished) return;
     finished = true;
-    // Hold on the steady window shot, then zoom precisely into the ringed planet while light grows from
-    // that exact point; at full light we swap to our scene, which appears as the light fades.
+    // Freeze on the last dark frame before the video's flash and draw our own: a star lights up where the
+    // video's flare would be, the camera pans and pushes in so it glides to the centre, its light grows and
+    // whites the screen out, we hold a beat, swap to our scene underneath and let the light fade.
+    // Everything runs on our clock, so it is smooth even when the video stutters.
     video.pause();
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
     tr = { frame, W, H };
     canvas.style.transition = ""; canvas.style.opacity = "1";
-    const fx = rect.left + FLASH.x * rect.w, fy = rect.top + FLASH.y * rect.h; // flash on screen
-    const ZOOM = reduced ? 0 : 950, FALL = reduced ? 0 : 1500;
-    const light = document.createElement("div");
-    Object.assign(light.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
-      background: `radial-gradient(circle at ${fx}px ${fy}px, #ffffff 0%, #f4fbff 14%, rgba(220,240,255,.97) 34%, rgba(195,228,255,.93) 62%, rgba(175,215,250,.9) 100%)`,
-      transition: `opacity ${ZOOM}ms cubic-bezier(.7,0,.84,0)` });
-    document.body.appendChild(light);
-    video.style.transformOrigin = `${FLASH.x * 100}% ${FLASH.y * 100}%`;
-    video.style.transition = `transform ${ZOOM}ms cubic-bezier(.55,0,.75,.2)`;
-    requestAnimationFrame(() => { video.style.transform = "scale(3.2)"; light.style.opacity = "1"; });
-    setTimeout(() => {
+    const ZOOM = reduced ? 0 : 1600, HOLD = reduced ? 0 : 700, FALL = reduced ? 0 : 1600;
+    const layer = (z) => { const d = document.createElement("div"); Object.assign(d.style, { position: "fixed", inset: "0", zIndex: z, pointerEvents: "none" }); document.body.appendChild(d); return d; };
+    const star = layer(40), wash = layer(41);
+    wash.style.background = "#f4faff"; wash.style.opacity = "0";
+    const m = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(video.style.transform || ""); // portrait pan offset, if any
+    const bx = m ? +m[1] : 0, by = m ? +m[2] : 0;
+    video.style.transition = "none"; video.style.transformOrigin = "0 0";
+    const px = POINT[0][1], py = POINT[0][2], D = Math.hypot(W, H);
+    const sx0 = rect.left + bx + px * rect.w, sy0 = rect.top + by + py * rect.h; // the star on screen before the move
+    let t0 = 0;
+    const step = () => {
+      const k = ZOOM ? Math.min(1, (performance.now() - t0) / ZOOM) : 1;
+      const e = k * k * (3 - 2 * k), z = 1 + 3.2 * k * k * k;    // pan eases in and out; the push accelerates
+      const sx = sx0 + (W / 2 - sx0) * e, sy = sy0 + (H * 0.45 - sy0) * e;
+      video.style.transform = `translate(${(sx - rect.left - z * px * rect.w).toFixed(1)}px, ${(sy - rect.top - z * py * rect.h).toFixed(1)}px) scale(${z.toFixed(4)})`;
+      // The star: a hard white core with a soft blue halo and a thin horizontal lens streak, all growing.
+      const g = Math.pow(k, 2.4), core = 1.5 + g * D * 0.35, halo = 10 + Math.pow(k, 1.6) * D * 0.7;
+      const streak = 40 + Math.pow(k, 1.3) * W * 1.4, sh = 1 + g * 40;
+      star.style.background =
+        `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fff ${core.toFixed(1)}px, rgba(215,238,255,.8) ${(core + halo * 0.15).toFixed(1)}px, rgba(160,205,255,.35) ${(core + halo * 0.45).toFixed(1)}px, rgba(140,190,255,0) ${(core + halo).toFixed(1)}px),` +
+        `radial-gradient(${streak.toFixed(0)}px ${sh.toFixed(1)}px at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, rgba(235,246,255,.9), rgba(180,215,255,0))`;
+      star.style.opacity = String(Math.min(1, k * 6).toFixed(3)); // lights up in the first moments
+      wash.style.opacity = String(Math.pow(Math.max(0, (k - 0.35) / 0.65), 2.2).toFixed(3));
+      if (k < 1) return requestAnimationFrame(step);
+      wash.style.opacity = "1"; star.remove();
+      setTimeout(swap, HOLD);
+    };
+    const swap = () => {
       fadeOutVideo();
       video.style.opacity = "0";
       root.style.background = "transparent";
       frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
       opts.emit?.("introFocus", true);
-      light.style.transition = `opacity ${FALL}ms cubic-bezier(.16,1,.3,1)`;
-      light.style.opacity = "0";
-      const t0 = performance.now();
-      const fadeFrame = () => { const k = Math.min(1, (performance.now() - t0 - 300) / 1000); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
+      wash.style.transition = `opacity ${FALL}ms cubic-bezier(.16,1,.3,1)`;
+      requestAnimationFrame(() => { wash.style.opacity = "0"; });
+      const t1 = performance.now();
+      const fadeFrame = () => { const k = Math.min(1, (performance.now() - t1 - 300) / 1000); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
       reduced ? frame?.setOpacity(1) : fadeFrame();
-      setTimeout(() => light.remove(), FALL + 100);
+      setTimeout(() => wash.remove(), FALL + 100);
       finish();
-    }, ZOOM + 40);
+    };
+    // Let the menu card fade (.3 s) before the star lights up.
+    setTimeout(() => { t0 = performance.now(); step(); }, reduced ? 0 : 380);
   }
   function finish() {
     opts.sound?.("enter"); // our ship sound starts only once the video is over
