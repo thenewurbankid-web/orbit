@@ -4,6 +4,8 @@
 //   remote – opened on a phone from the QR link (#o=<offer>); everything arrives over a WebRTC
 //            data channel from the host page. Nothing secret is stored here; no server calls.
 
+import { host } from "./host.js";
+
 const STUN = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
 const CHUNK = 15000;
 export const OPEN = ["in_progress", "blocked", "in_review", "todo"];
@@ -402,6 +404,7 @@ const ui = { drafts: {}, sent: {}, chatAgent: "", chatText: "", chatIssue: "", m
 export function toggleList(force) {
   const el = $("list");
   const show = force ?? el.hidden;
+  if (show && host.mode === "doc") host.bringBack?.(); // the plain list is a full page: it opens in the tab, so Orbit comes back first
   el.hidden = !show;
   if (show) { renderList(); $("listMain").querySelector("button")?.focus(); }
   store.emit("listview", show);

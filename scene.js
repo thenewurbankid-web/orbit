@@ -45,6 +45,8 @@ import { createFrame, frameMetrics } from "./frame.js";
 import { makeDrone, makeFighter, makePod, makeHostile } from "./carriers.js";
 import * as snd from "./sound.js";
 import { createRealFx } from "./realfx.js";
+import { host, hostOn, onHostChange } from "./host.js";
+import { createFloat, floatSupport, FLOAT_TIP, FLOAT_TIP_VIDEO } from "./float.js";
 
 // Black board: soft grey text; only the active or important item is brighter.
 const C = {
@@ -72,12 +74,22 @@ export async function startScene({ canvas, kbd, reduced }) {
   // report hidden while on screen), so a hidden page falls back to a slow timer instead of stopping.
   // Never fully stop: while the page reports hidden, draw slowly (about 1.5 fps) instead of pausing.
   const isHidden = () => false;
-  const raf = (f) => (document.hidden ? setTimeout(() => f(performance.now()), forceRender ? 33 : 667) : requestAnimationFrame(f));
+  // While Orbit floats in a Document PiP window, its own requestAnimationFrame drives the loop (the main tab may be
+  // hidden and throttled). A video PiP of the canvas also needs full rate in a hidden tab.
+  let rafWin = null;
+  const raf = (f) => {
+    // The PiP window's rAF timestamps use its own time origin: pass this page's clock instead.
+    if (host.mode === "doc") { rafWin = host.win; return host.win.requestAnimationFrame(() => f(performance.now())); }
+    if (document.hidden) { rafWin = null; return setTimeout(() => f(performance.now()), forceRender || host.mode === "video" ? 33 : 667); }
+    rafWin = window; return requestAnimationFrame(f);
+  };
+  const cancelRaf = (id) => { try { if (rafWin) rafWin.cancelAnimationFrame(id); else clearTimeout(id); } catch { /* window closed */ } };
   let dirty = true, paused = false, rafId = 0, last = performance.now(), clock = 0, activeUntil = performance.now() + 3000, lastRender = 0;
   // ---------------- renderer, tier, passes ----------------
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", alpha: false });
   const tier = fx.detectTier(renderer);
   const dpr = Math.min(devicePixelRatio || 1, tier.dpr);
+  let pr = dpr; // the pixel ratio in use: capped while floating
   renderer.setPixelRatio(dpr);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.5;
@@ -289,7 +301,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     return (sel ? 10 : 0) + ({ planet: 4, pct: 3.5, moon: 2, issue: 1 }[k] ?? 1);
   }
   function placeLabels() {
-    const top = fm.y0 + (fm.phone ? 74 : 92), bottom = fm.y1 - 6;
+    const top = compact ? sumPlate.rect.y + sumPlate.rect.h + 2 : fm.y0 + (fm.phone ? 74 : 92), bottom = fm.y1 - 6;
     const items = [];
     for (const a of labels) {
       const { plate, w, h } = a.userData.label;
@@ -298,12 +310,13 @@ export async function startScene({ canvas, kbd, reduced }) {
       const op = a.material.opacity;
       a.getWorldPosition(_lp).project(camera);
       if (op < 0.02 || _lp.z > 1 || Math.abs(_lp.x) > 1.3 || Math.abs(_lp.y) > 1.3) { plate.mesh.visible = false; continue; }
+      if (compact && labelPriority(a) < 4) { plate.mesh.visible = false; continue; } // small window: planets and the selection only
       items.push({ a, plate, w, h, op, cx: (_lp.x * 0.5 + 0.5) * W, cy: (-_lp.y * 0.5 + 0.5) * H, pr: labelPriority(a) });
     }
     items.sort((p, q) => q.pr - p.pr);
     const placed = bracketPlate.visible && bracketPlate.readoutRect ? [bracketPlate.readoutRect] : [];
     // Phones: the activity handle, readout screens, the speech caption and an open sheet are no-go zones.
-    if (fm.phone) {
+    if (fm.phone || compact) {
       for (const r of readouts) placed.push(r.plate.rect);
       if (caption.plate.visible && caption.alpha > 0.02) placed.push(caption.plate.rect);
       if (slate.plate.visible && slate.kind) placed.push(slate.area);
@@ -446,7 +459,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       co.ringPct = companyProgress(c) ?? 0;
       co.label.position.copy(co.center).add(new THREE.Vector3(0, -co.radius - 2.0, 0));
       const cp = companyProgress(c);
-      const cpText = cp == null ? "" : innerWidth < 640 ? `~${cp}% overall` : `~${cp}% overall · rough local-model estimate`;
+      const cpText = cp == null ? "" : host.win.innerWidth < 640 ? `~${cp}% overall` : `~${cp}% overall · rough local-model estimate`;
       if (cpText !== co.pctText) {
         if (co.pct) co.group.remove(co.pct);
         co.pctText = cpText;
@@ -978,7 +991,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     else if (e.kind === "pair") submitPair(kbd.value);
     else if (e.kind === "helper") { const t = kbd.value.trim(); stopEditing(); if (t) helperAsk(e.key, t); drawSlate(); }
   });
-  kbd.addEventListener("blur", () => { setTimeout(() => { if (document.activeElement !== kbd && slate.editing) { slate.editing = null; drawSlate(); } }, 50); });
+  kbd.addEventListener("blur", () => { setTimeout(() => { if (kbd.ownerDocument.activeElement !== kbd && slate.editing) { slate.editing = null; drawSlate(); } }, 50); });
 
   async function submitPair(text) {
     stopEditing();
@@ -1275,6 +1288,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       { k: "done", v: doneToday, label: "done today", tap: () => goFirstIssue((i) => i.status === "done" && i.completedAt && new Date(i.completedAt).toDateString() === today, "done", "done today") },
       { k: "pct", v: overall, label: "overall · rough estimate", tap: () => goSky() },
     ];
+    if (compact) { const sh = { work: "working", prog: "active", block: "blocked", wait: "for you" }; return all.filter((x) => sh[x.k]).map((x) => ({ ...x, label: sh[x.k] })); }
     if (W >= 1100) return all;
     if (W >= 640) return all.filter((x) => x.k !== "pct" && x.k !== "done"); // overall % is in the corner HUD
     const short = { work: "working", prog: "active", block: "blocked", wait: "for you" };
@@ -1289,7 +1303,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     const items = kpis();
     if (store.mode === "demo") { x.font = `400 11px ${HUDF}`; x.fillStyle = "rgba(222,170,96,0.9)"; x.textAlign = "left"; x.textBaseline = "top"; x.fillText("DEMO", 2, 0); }
-    const cw = w / items.length, big = Math.min(46, Math.max(26, cw * 0.42));
+    const cw = w / items.length, big = compact ? Math.min(22, Math.max(14, cw * 0.28)) : Math.min(46, Math.max(26, cw * 0.42));
+    const lf = compact ? 8 : 11, lgap = compact ? 11 : 16; // label font and gap under the number
     items.forEach((it, k) => {
       const v = String(it.v);
       if (kpiPrev.has(it.k) && kpiPrev.get(it.k) !== v) kpiFlash.set(it.k, now);
@@ -1302,9 +1317,9 @@ export async function startScene({ canvas, kbd, reduced }) {
       x.font = `200 ${big}px ${HUDF}`;
       x.fillStyle = it.amber ? `rgba(222,170,96,${Math.min(0.95, alpha + 0.35)})` : `rgba(200,204,208,${alpha})`;
       x.fillText(v, cx, big + 4);
-      x.font = `${fm.phone ? 400 : 300} 11px ${HUDF}`;
+      x.font = `${fm.phone ? 400 : 300} ${lf}px ${HUDF}`;
       x.fillStyle = it.amber ? "rgba(222,170,96,0.8)" : `rgba(160,164,168,${fm.phone ? 0.72 : 0.55})`;
-      x.fillText(it.label.toUpperCase(), cx, big + 20);
+      x.fillText(it.label.toUpperCase(), cx, big + 4 + lgap);
       if (it.tap) sumPlate.hot.push({ x: cw * k, y: 0, w: cw, h, fn: it.tap });
     });
     sumPlate.end();
@@ -1314,6 +1329,16 @@ export async function startScene({ canvas, kbd, reduced }) {
 
   // Bottom strip: refresh ring with countdown, interval, view, pair, sound. Nearly invisible until touched.
   const INTERVALS = [10, 15, 30, 60, 120, 300];
+  // Float (desktop): "doc" (interactive Document PiP), "video" (view-only video PiP) or null. Offered only once
+  // the board is shown, never during the intro.
+  const floatKind = floatSupport();
+  let boardShown = !store.introPending;
+  const floatItem = () => {
+    if (!floatKind || !boardShown) return [];
+    if (host.mode === "doc") return [{ id: "float", label: compact ? "back" : "bring back" }];
+    if (host.mode === "video") return [{ id: "float", label: "floating", on: true }];
+    return [{ id: "float", label: "float" }];
+  };
   function drawPanel() {
     const x = panelPlate.begin();
     const { w, h } = panelPlate.rect;
@@ -1325,8 +1350,14 @@ export async function startScene({ canvas, kbd, reduced }) {
     const secs = Math.max(0, Math.round((store.countdownAt - Date.now()) / 1000));
     const pairState = store.mode === "remote" ? store.link.state : store.pair.state;
     const viewName = view.level === "sky" ? "system" : view.level === "company" ? "planet" : view.level === "agent" ? "moon" : "satellite";
-    const narrow = W < 640;
-    const items = [
+    const narrow = W < 640 || compact;
+    // Small floating window: a minimal strip.
+    const items = compact ? [
+      { id: "refresh", label: `${secs}s`, ring: left },
+      { id: "view", label: viewName },
+      { id: "sound", label: snd.soundState().muted ? "muted" : "sound", on: !snd.soundState().muted },
+      ...floatItem(),
+    ] : [
       { id: "refresh", label: narrow ? `${secs}s` : `refresh ${secs}s`, ring: left },
       ...(narrow ? [] : [{ id: "interval", label: `every ${store.board?.intervalSec ?? 15}s` }]), // phones: interval and volume live on wider screens
       { id: "view", label: narrow ? viewName : `view ${viewName}` },
@@ -1335,19 +1366,21 @@ export async function startScene({ canvas, kbd, reduced }) {
       ...(narrow ? [] : [{ id: "vol", label: `vol ${Math.round(snd.soundState().volume * 100)}%` }]),
       ...(view.level !== "sky" && view.company && store.mode !== "demo" ? [(() => { const c = (store.board?.companies ?? []).find((x) => x.prefix === view.company); return { id: "work", label: (c?.paused ? "⏸ " : "⌘ ") + (narrow ? "cmd" : "command"), on: !!c?.paused }; })()] : []),
       { id: "project", label: narrow ? "+" : "+ project" },
+      ...floatItem(),
       { id: "help", label: "?" },
     ];
-    x.font = `${narrow ? 400 : 300} ${narrow ? 12 : 11}px ${HUDF}`; x.textBaseline = "middle"; x.textAlign = "left";
-    const widths = items.map((it) => x.measureText(it.label).width + (it.ring != null ? 22 : 0) + 22);
+    x.font = `${narrow && !compact ? 400 : 300} ${compact ? 10 : narrow ? 12 : 11}px ${HUDF}`; x.textBaseline = "middle"; x.textAlign = "left";
+    const ringR = compact ? 4 : 6;
+    const widths = items.map((it) => x.measureText(it.label).width + (it.ring != null ? ringR * 2 + 10 : 0) + (compact ? 16 : 22));
     if (narrow) { const spare = w - widths.reduce((p, q) => p + q, 0); if (spare > 0) widths.forEach((_, k) => (widths[k] += spare / widths.length)); } // phones: spread evenly, bigger targets
     let cx = (w - widths.reduce((p, q) => p + q, 0)) / 2;
     items.forEach((it, k) => {
       const iw = widths[k];
-      let tx = cx + 11;
+      let tx = cx + (compact ? 8 : 11);
       if (it.ring != null) {
-        x.strokeStyle = col(0.35); x.lineWidth = 1.2; x.beginPath(); x.arc(tx + 6, h / 2, 6, 0, Math.PI * 2); x.stroke();
-        x.strokeStyle = col(1); x.beginPath(); x.arc(tx + 6, h / 2, 6, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2); x.stroke();
-        tx += 20;
+        x.strokeStyle = col(0.35); x.lineWidth = 1.2; x.beginPath(); x.arc(tx + ringR, h / 2, ringR, 0, Math.PI * 2); x.stroke();
+        x.strokeStyle = col(1); x.beginPath(); x.arc(tx + ringR, h / 2, ringR, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2); x.stroke();
+        tx += ringR * 2 + 8;
       }
       x.fillStyle = it.on ? `rgba(226,230,234,${Math.max(a, 0.5)})` : col(1);
       x.fillText(it.label, tx, h / 2 + 0.5);
@@ -1382,6 +1415,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     });
   }
   function readoutSlots() {
+    if (compact) return [{ x: fm.x0 + fm.cb + 4, y: fm.y1 - 50, w: Math.min(280, fm.x1 - fm.x0 - 2 * fm.cb - 8) }]; // small window: one, bottom left
     if (fm.phone) { const w = Math.min(fm.x1 - 8, handlePlate.rect.x - 6) - (fm.x0 + 8); return [{ x: fm.x0 + 8, y: fm.y0 + 80, w }, { x: fm.x0 + 8, y: fm.y0 + 80 + 56, w }]; } // the bottom is the speech caption's
     const rw = 250, chatOpen = slate.kind && W >= 860;
     const lx = fm.x0 + fm.cb + 10, rx = fm.x1 - fm.cb - 10 - rw;
@@ -1979,7 +2013,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const k = sumPlate.rect;
     let top = k.y + k.h;                                               // KPI numbers and labels
     if (fm.phone) top = Math.max(top, fm.y0 + 80 + 56 + 46);           // the two readout screens under them
-    else { const r = readoutSlots()[0]; if (r) top = Math.max(top, r.y + 44); }
+    else if (!compact) { const r = readoutSlots()[0]; if (r) top = Math.max(top, r.y + 44); }
     const bot = fm.y1 - (fm.phone ? 96 : 60);                          // speech caption / bottom strip
     const left = fm.x0 + 10, right = (fm.phone ? Math.min(fm.x1, handlePlate.rect.x) : fm.x1) - 10;
     let x = (hx * 0.5 + 0.5) * W, y = (-hy * 0.5 + 0.5) * H;
@@ -2471,15 +2505,20 @@ export async function startScene({ canvas, kbd, reduced }) {
       else { const t = now - h.t0; kpi = Math.min(1, t / 300); corners = Math.min(1, Math.max(0, (t - 150) / 300)); strip = Math.min(1, Math.max(0, (t - 300) / 300)); if (t > 700) intro.hud = null; activeUntil = Math.max(activeUntil, now + 100); }
     }
     sumPlate.mat.uniforms.uOpacity.value = kpi; panelPlate.mat.uniforms.uOpacity.value = strip; svgFrame.setHudAlpha(corners);
+    if (!intro.hud && !boardShown) { boardShown = true; drawPanel(); syncFloatButton(); } // float is offered only after the intro
   }
   store.on("listview", (show) => { paused = show; if (!show) { dirty = true; kick(); } });
   function openNotice() { notice = "Waiting for the board…"; openSlate("notice"); }
 
   // ---------------- layout ----------------
-  let W = 1, H = 1;
+  let W = 1, H = 1, compact = false;
   const viewOffset = { x: 0, y: 0, tx: 0, ty: 0 };
   function layout() {
+    // A freshly opened floating window can report 0×0 for a moment: re-fit once it has a size.
+    if (canvas.clientWidth < 2 || canvas.clientHeight < 2) { if (!layout.retry) layout.retry = setTimeout(() => { layout.retry = 0; layout(); kick(); }, 50); return; }
     W = canvas.clientWidth; H = canvas.clientHeight;
+    compact = host.mode === "doc" && (W < 760 || H < 480); // the small floating window
+    svgFrame.setCompact(compact);
     const wasPortrait = portrait;
     portrait = W / H < 0.85;
     renderer.setSize(W, H, false);
@@ -2488,11 +2527,12 @@ export async function startScene({ canvas, kbd, reduced }) {
     camera.fov = portrait ? 62 : 52;
     ortho.left = 0; ortho.right = W; ortho.top = 0; ortho.bottom = -H; ortho.updateProjectionMatrix();
     film.uniforms.uAspect.value = W / H;
-    film.uniforms.uRes.value.set(W * dpr, H * dpr);
+    film.uniforms.uRes.value.set(W * pr, H * pr);
     const safeTop = 8, gut = 16;
-    fm = frameMetrics(W, H);
+    fm = frameMetrics(W, H, null, compact);
     void safeTop;
-    if (fm.phone) sumPlate.place(fm.x0 + 4, fm.y0 + 8, fm.x1 - fm.x0 - 8, 62);
+    if (compact) sumPlate.place(fm.x0 + fm.ct + 4, fm.y0 + fm.lift + 2, fm.x1 - fm.x0 - 2 * fm.ct - 8, 40);
+    else if (fm.phone) sumPlate.place(fm.x0 + 4, fm.y0 + 8, fm.x1 - fm.x0 - 8, 62);
     else sumPlate.place(fm.x0 + fm.ct + 150, fm.y0 + fm.lift + 4, fm.x1 - fm.x0 - 2 * fm.ct - 300, 72);
     drawSummary();
     updateFrame();
@@ -2515,7 +2555,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (wasPortrait !== portrait) { for (const co of companyObjs.values()) co.center = null; syncSky(); if (view.level === "sky") goSky(); else if (view.level === "company") goCompany(view.company); }
     dirty = true;
   }
-  addEventListener("resize", () => { layout(); kick(); });
+  hostOn("resize", () => { layout(); kick(); });
 
   // ---------------- input: pointer, pinch, wheel, gestures ----------------
   const pointers = new Map();
@@ -2618,6 +2658,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (hit.spot?.fn === "panel:project") { store.emit("openConnect"); return; }
       if (hit.spot?.fn === "panel:work") { openWorkPanel(view.company); return; }
       if (hit.spot?.fn === "panel:help") { store.emit("openHelp"); return; }
+      if (hit.spot?.fn === "panel:float") { blip(600); floater_.toggle(); return; }
       if (hit.spot?.fn === "panel:pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
       if (typeof hit.spot?.fn === "function") { hit.spot.fn(); return; }
       if (hit.plate === slate.plate) return; // tap on the glass with nothing there
@@ -2643,8 +2684,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     cancelFlight(); cs.zoom = true; rig.goal.dist = Math.max(3, Math.min(140, rig.goal.dist * Math.exp(e.deltaY * 0.0012)));
     zoomLevels();
   }, { passive: false });
-  addEventListener("keydown", (e) => {
-    if (document.activeElement === kbd) return;
+  hostOn("keydown", (e) => {
+    if (kbd.ownerDocument.activeElement === kbd) return;
     if (e.key === "Escape") { if (feed.open) toggleFeed(false); else backOut(); }
     if (e.key === "l" || e.key === "L") toggleList(true);
   });
@@ -2688,12 +2729,41 @@ export async function startScene({ canvas, kbd, reduced }) {
   window.__observatory = perf;
   if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { queueFx, meteor, comet, persist: () => persist, flights: () => flights, rfx, fire, explode, shoot, viewPoint, sendDrone, incomingPod, ufoArrive, companies: () => companyObjs, agents: () => agentObjs, hostiles: () => hostiles, goCompany, glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
-  const resume = () => { if (paused) return; cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
+  const resume = () => { if (paused) return; cancelRaf(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
   document.addEventListener("visibilitychange", resume);
-  addEventListener("focus", resume);
-  addEventListener("pointerdown", resume, true);
-  addEventListener("pointerdown", () => { if (!snd.soundState().started) { snd.startAudio(); snd.ambienceIn(3); } }, { capture: true, once: true });
-  addEventListener("keydown", resume, true);
+  hostOn("focus", resume);
+  hostOn("pointerdown", resume, true);
+  hostOn("pointerdown", () => { if (!snd.soundState().started) { snd.startAudio(); snd.ambienceIn(3); } }, { capture: true, once: true });
+  hostOn("keydown", resume, true);
+
+  // ---------------- float (picture-in-picture) ----------------
+  const floater_ = createFloat({ canvas });
+  host.bringBack = () => floater_.stop();
+  const floatBtn = document.getElementById("floatBtn");
+  function syncFloatButton() {
+    if (!floatBtn) return;
+    floatBtn.hidden = !floatKind || !boardShown || !!host.mode;
+    floatBtn.setAttribute("aria-label", floatKind === "video" ? FLOAT_TIP_VIDEO : FLOAT_TIP);
+  }
+  floatBtn?.addEventListener("click", () => floater_.start());
+  // Hover tooltip on the strip's float control (the strip is drawn on the canvas).
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const h = panelPlate.hit(e.clientX, e.clientY);
+    const tip = h?.spot?.fn === "panel:float" ? (host.mode === "doc" ? "Bring Orbit back to its tab" : host.mode === "video" ? "Close the floating window" : floatKind === "video" ? FLOAT_TIP_VIDEO : FLOAT_TIP) : "";
+    if (canvas.title !== tip) canvas.title = tip;
+  });
+  // A new host window: cap the pixel ratio for the small window, re-fit everything, restart the clock there.
+  onHostChange(() => {
+    for (const r of readouts.splice(0)) { glass.remove(r.plate.mesh); r.plate.tex.dispose(); } // re-flow readout screens in the new window
+    pr = host.mode === "doc" ? Math.min(dpr, 1.5) : dpr;
+    renderer.setPixelRatio(pr); composer.setPixelRatio?.(pr);
+    world.traverse((o) => { const u = o.material?.uniforms?.uPixelRatio; if (u) u.value = pr; });
+    layout(); drawPanel(); syncFloatButton();
+    cancelRaf(rafId); rafId = 0; last = performance.now(); dirty = true; kick();
+    if (!paused) rafId = raf(frame);
+  });
+  syncFloatButton();
 
   const camFwd = new THREE.Vector3(), prevCam = new THREE.Vector3(), tmpCam = new THREE.Vector3();
   let starStreak = 0;
@@ -2775,7 +2845,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       warpRealMat.uniforms.uOpacity.value = warpAmt * 1.1; warpReal.scale.z = warp.scale.z; warpReal.visible = warp.visible; warp.visible = false;
     }
     if (bokeh) {
-      bokeh.enabled = warpAmt > 0.05 || rig.speed > 4;
+      bokeh.enabled = !compact && (warpAmt > 0.05 || rig.speed > 4); // depth of field is invisible in the small window
       if (bokeh.enabled) { bokeh.uniforms.focus.value = rig.dist; bokeh.uniforms.aperture.value = 0.00008 * Math.min(1, rig.speed / 20); }
     }
 

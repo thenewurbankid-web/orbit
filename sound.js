@@ -2,6 +2,8 @@
 // (the door button). Ambience: engine hum, air recycler, occasional console chirps. Events and alarms
 // are short and rate-limited. Mute and volume are remembered in localStorage.
 
+import { host, onHostChange } from "./host.js";
+
 let ctx = null, master = null, amb = null, sfx = null, klaxonTimer = null;
 const last = new Map();
 const state = { muted: false, volume: 0.6 };
@@ -19,7 +21,10 @@ export function startAudio() {
   amb = ctx.createGain(); amb.gain.value = 0; amb.connect(master);
   sfx = ctx.createGain(); sfx.gain.value = 0.5; sfx.connect(master);
   buildAmbience();
-  document.addEventListener("visibilitychange", () => duck(document.hidden));
+  // A hidden tab ducks the ambience, unless Orbit is floating (then it is still on screen).
+  const reduck = () => duck(document.hidden && !host.mode);
+  document.addEventListener("visibilitychange", reduck);
+  onHostChange(reduck);
 }
 
 function noiseBuffer(kind = "brown", secs = 4) {

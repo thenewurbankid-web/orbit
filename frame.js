@@ -19,21 +19,22 @@ export function safeInsets() {
 }
 
 // Final layout for a viewport, or the same shape fitted to a given opening {x0, y0, x1, y1}.
-export function frameMetrics(W, H, open = null) {
-  const phone = W < 640;
-  const sa = open ? { t: 0, r: 0, b: 0, l: 0 } : safeInsets();
-  const metal = phone ? 6 : 13, lip = phone ? 2 : 3;     // frame metal + bright lip
-  const strip = phone ? 30 : 28;                          // console strip height (phones: a comfortable touch target)
+// compact: the small floating (picture-in-picture) window: a slimmer frame and a minimal strip, no corner HUD.
+export function frameMetrics(W, H, open = null, compact = false) {
+  const phone = W < 640 && !compact;
+  const sa = open || compact ? { t: 0, r: 0, b: 0, l: 0 } : safeInsets();
+  const metal = compact ? 5 : phone ? 6 : 13, lip = compact || phone ? 2 : 3;     // frame metal + bright lip
+  const strip = compact ? 20 : phone ? 30 : 28;                          // console strip height (phones: a comfortable touch target)
   const x0 = open ? open.x0 : metal + lip + sa.l, x1 = open ? open.x1 : W - metal - lip - sa.r;
-  const y0 = open ? open.y0 : metal + lip + sa.t, y1 = open ? open.y1 : H - strip - metal - lip - (phone ? 4 : 6) - sa.b;
+  const y0 = open ? open.y0 : metal + lip + sa.t, y1 = open ? open.y1 : H - strip - metal - lip - (phone || compact ? 4 : 6) - sa.b;
   const scale = (x1 - x0) / Math.max(1, W - 2 * (metal + lip));
-  const ct = Math.round((phone ? 10 : Math.min(56, Math.max(28, (W - 2 * (metal + lip)) * 0.032))) * scale); // top corner cut
+  const ct = Math.round((phone ? 10 : compact ? Math.min(18, Math.max(10, W * 0.025)) : Math.min(56, Math.max(28, (W - 2 * (metal + lip)) * 0.032))) * scale); // top corner cut
   const cb = Math.round(ct * 0.6);                                                                            // bottom corner cut
-  const lift = Math.max(2, Math.round((phone ? 3 : 5) * scale));                                              // centre steps
+  const lift = Math.max(2, Math.round((phone || compact ? 3 : 5) * scale));                                              // centre steps
   const nx0 = Math.round(x0 + (x1 - x0) * 0.36), nx1 = Math.round(x0 + (x1 - x0) * 0.64);
   const sy = y1 + Math.round((metal + lip) * scale) + 4;
   const st = { x: x0 + cb, y: sy, w: x1 - x0 - 2 * cb, h: Math.max(10, Math.round(strip * Math.min(1, scale))) };
-  return { phone, metal: metal * Math.min(1.6, scale), lip, side: metal + lip, x0, x1, y0, y1, ct, cb, lift, nx0, nx1, W, H, strip: st };
+  return { phone, compact, metal: metal * Math.min(1.6, scale), lip, side: metal + lip, x0, x1, y0, y1, ct, cb, lift, nx0, nx1, W, H, strip: st };
 }
 
 // Opening polygon grown outward by d pixels (d < 0 shrinks it).
@@ -63,7 +64,7 @@ export function createFrame(host) {
   let glassGrad = null, glare = { x: 0, y: 0 };
   // Slide the glass gloss with device tilt or pointer (-1..1 each), so it reads as a real reflection.
   function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.04).toFixed(3)} ${(glare.y * 0.03).toFixed(3)})`); }
-  const svg = el("svg", { "aria-hidden": "true", "shape-rendering": "geometricPrecision" });
+  const svg = el("svg", { "aria-hidden": "true", "shape-rendering": "geometricPrecision", "data-float": "" });
   Object.assign(svg.style, { position: "fixed", inset: "0", width: "100vw", height: "100%", pointerEvents: "none", zIndex: "2" });
   host.appendChild(svg);
   const style = document.createElement("style");
@@ -77,18 +78,18 @@ export function createFrame(host) {
     @keyframes obs-ap { 50% { opacity: .35; } }
     .obs-hud { font: 300 9px "JetBrains Mono", ui-monospace, Menlo, monospace; fill: rgba(196,232,246,0.62); letter-spacing: .04em; transition: opacity .3s; }`;
   document.head.appendChild(style);
-  let built = null, override = null, hudAlpha = 1;
+  let built = null, override = null, hudAlpha = 1, compact = false;
 
   function build(W, H, light) {
     svg.innerHTML = "";
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    const m = frameMetrics(W, H, override);
+    const m = frameMetrics(W, H, override, compact);
     const defs = el("defs", {}, svg);
     // Real brushed, worn steel (ambientCG Metal011, CC0; see assets/fx/CREDITS.md), tiled and blended over the
     // dark body so it keeps the frame's tone. Phones get the 256 px tile.
-    const T = m.phone ? 192 : 320;
+    const T = m.phone || m.compact ? 192 : 320;
     const pat = el("pattern", { id: "obs-steel", width: T, height: T, patternUnits: "userSpaceOnUse" }, defs);
-    el("image", { href: `assets/fx/steel${m.phone ? "-sm" : ""}.jpg`, width: T, height: T, preserveAspectRatio: "none" }, pat);
+    el("image", { href: `assets/fx/steel${m.phone || m.compact ? "-sm" : ""}.jpg`, width: T, height: T, preserveAspectRatio: "none" }, pat);
     const lx = 0.5 - light[0] * 0.5, ly = 0.5 - light[1] * 0.5;
     // Clean metal: one lit side, one shadow side, few mid greys.
     const body = el("linearGradient", { id: "obs-body", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
@@ -154,13 +155,13 @@ export function createFrame(host) {
       el("line", { x1: rx, y1: y + lines.length * 11 - 6, x2: rx + 90, y2: y + lines.length * 11 - 6, stroke: "rgba(196,232,246,0.3)", "stroke-width": 0.6 }, gg);
       return gg;
     };
-    const hudEls = m.phone ? null : {
+    const hudEls = m.phone || m.compact ? null : {
       tl: corner(m.x0 + m.ct + pad, m.y0 + m.lift + 14, "start", ["", ""]),
       tr: corner(m.x1 - m.ct - pad, m.y0 + m.lift + 14, "end", ["", ""]),
       bl: corner(m.x0 + m.cb + pad, m.y1 - 22, "start", ["", ""]),
       br: corner(m.x1 - m.cb - pad, m.y1 - 22, "end", ["", ""]),
     };
-    built = { W, H, m, light, hudEls, hud, open: override };
+    built = { W, H, m, light, hudEls, hud, open: override, compact };
   }
   let lastHud = null;
   function fillHud(hudText) {
@@ -175,7 +176,7 @@ export function createFrame(host) {
     metrics: () => built?.m,
     update(W, H, light, hudText) {
       if (hudText) lastHud = hudText;
-      const changed = !built || built.W !== W || built.H !== H || built.open !== override || Math.abs(built.light[0] - light[0]) + Math.abs(built.light[1] - light[1]) > 0.12;
+      const changed = !built || built.W !== W || built.H !== H || built.open !== override || built.compact !== compact || Math.abs(built.light[0] - light[0]) + Math.abs(built.light[1] - light[1]) > 0.12;
       if (changed) build(W, H, light);
       fillHud(lastHud);
     },
@@ -185,6 +186,8 @@ export function createFrame(host) {
       build(W, H, built?.light ?? [0.7, 0.7]);
       fillHud(lastHud);
     },
+    setCompact(c) { compact = !!c; },
+    element: svg,
     setHudAlpha(a) { hudAlpha = a; built?.hud?.setAttribute("opacity", a); },
     setOpacity(a) { svg.style.opacity = String(a); },
     setZ(z) { svg.style.zIndex = String(z); },

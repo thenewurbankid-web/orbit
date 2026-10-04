@@ -2,6 +2,8 @@
 // Frost is allowed here only; the scene itself stays clean black. Shared motion: 180/280/450 ms,
 // expo-out to enter, quick ease-in to exit, scale 0.98→1 plus fade, list stagger 30 ms.
 
+import { host } from "./host.js";
+
 const css = `
 :root { --ease-out: cubic-bezier(.16,1,.3,1); --ease-in: cubic-bezier(.4,0,1,1); }
 .frost { position: fixed; z-index: 30; max-height: calc(100% - 48px); overflow-y: auto; box-sizing: border-box; color: #dfe9ef; font: 15px/1.6 "JetBrains Mono", ui-monospace, Menlo, monospace;
@@ -57,32 +59,39 @@ const css = `
 @keyframes ra-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .frost, .frost.on, .frost .rowi, .alertbar { transition: opacity 180ms; transform: none !important; animation: none; opacity: 1; } .redalert .vig, .redalert .sweep { animation: none; } }
 `;
-let styled = false;
-function style() { if (styled) return; styled = true; const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s); }
+// Styles go into this page and, while Orbit floats, into the picture-in-picture document too.
+const styledDocs = new WeakSet();
+function style() {
+  for (const d of new Set([document, host.doc])) { if (styledDocs.has(d)) continue; styledDocs.add(d); const s = d.createElement("style"); s.textContent = css; d.head.appendChild(s); }
+}
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // A frosted panel centred (or at a given box); returns {el, close}.
 export function frostPanel(html, { width = 460, onClose, closeOnOutside = true, bottom = null } = {}) {
   style();
-  const el = document.createElement("div");
+  const doc = host.doc, win = host.win;
+  const el = doc.createElement("div");
   el.className = "frost";
+  el.dataset.float = ""; // travels with the board between this tab and the floating window
   Object.assign(el.style, { left: "50%", width: `min(${width}px, calc(100% - 32px))`, padding: "26px 30px" });
   if (bottom != null) { el.style.bottom = bottom; el.style.transform = "translateX(-50%)"; } else { el.style.top = "50%"; el.style.transform = "translate(-50%, -50%) scale(.98)"; }
   el.innerHTML = html;
-  document.body.appendChild(el);
-  requestAnimationFrame(() => { el.classList.add("on"); if (bottom == null) el.style.transform = "translate(-50%, -50%)"; });
+  doc.body.appendChild(el);
+  win.requestAnimationFrame(() => { el.classList.add("on"); if (bottom == null) el.style.transform = "translate(-50%, -50%)"; });
   let closed = false;
   const close = () => {
     if (closed) return; closed = true;
     el.classList.remove("on"); el.classList.add("off");
     setTimeout(() => el.remove(), 200);
-    removeEventListener("keydown", onKey, true); document.removeEventListener("pointerdown", onOut, true);
+    for (const w of wins) { w.removeEventListener("keydown", onKey, true); w.document.removeEventListener("pointerdown", onOut, true); }
     onClose?.();
   };
   const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
   const onOut = (e) => { if (closeOnOutside && !el.contains(e.target) && !e.target.closest?.(".frost")) close(); };
-  addEventListener("keydown", onKey, true);
-  setTimeout(() => document.addEventListener("pointerdown", onOut, true), 50);
+  // Listen in both windows: the panel may move between this tab and the floating window while open.
+  const wins = [...new Set([window, win])];
+  for (const w of wins) w.addEventListener("keydown", onKey, true);
+  setTimeout(() => { if (!closed) for (const w of wins) w.document.addEventListener("pointerdown", onOut, true); }, 50);
   return { el, close };
 }
 
@@ -195,6 +204,7 @@ export function createAlertUI({ onTap }) {
   style();
   const layer = document.createElement("div"); layer.className = "redalert"; layer.innerHTML = `<div class="sweep"></div><div class="vig"></div>`;
   const bar = document.createElement("button"); bar.className = "alertbar"; bar.type = "button";
+  layer.dataset.float = ""; bar.dataset.float = ""; // the alert follows the board into the floating window
   document.body.append(layer, bar);
   let current = null;
   bar.onclick = () => current && onTap(current);

@@ -67,8 +67,9 @@ canvas#sky { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100
 </head>
 <body>
 <a href="#" class="vh vh-link" id="skip">Open the list view (plain layout)</a>
-<canvas id="sky" tabindex="-1" aria-label="Orbit: a sky view of the Paperclip companies. Long-press the top-left corner, or use the list view link, for a plain layout."></canvas>
-<input id="kbd" class="vh" type="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" aria-label="Type here" enterkeyhint="send">
+<canvas id="sky" data-float tabindex="-1" aria-label="Orbit: a sky view of the Paperclip companies. Long-press the top-left corner, or use the list view link, for a plain layout."></canvas>
+<input id="kbd" data-float class="vh" type="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" aria-label="Type here" enterkeyhint="send">
+<button type="button" class="vh vh-link" id="floatBtn" hidden aria-label="Float Orbit in a small window that stays on top">Float Orbit in a small window that stays on top</button>
 <div id="list" hidden><main id="listMain"></main></div>
 <noscript><p id="fallback">This page needs JavaScript.</p></noscript>
 <script type="module" src="./app.js"></script>
