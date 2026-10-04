@@ -120,6 +120,8 @@ export function runIntro(opts) {
     video.style.filter = up > 1.6 ? `blur(${Math.min(1.4, (up - 1.6) * 0.35 + 0.35).toFixed(2)}px) contrast(1.06) saturate(1.06)` : "contrast(1.04) saturate(1.04)";
     hot.style.left = hint.style.left = rect.left + BUTTON.x * rect.w + "px";
     hot.style.top = hint.style.top = rect.top + BUTTON.y * rect.h + "px";
+    { const bx = rect.left + BUTTON.x * rect.w, by = rect.top + BUTTON.y * rect.h;
+      if (bx < 40 || bx > W - 40 || by < 40 || by > H - 40) { hot.style.left = hint.style.left = W / 2 + "px"; hot.style.top = hint.style.top = Math.round(H * 0.72) + "px"; } }
   }
   if (!root.querySelector(".intro-film")) {
     const film = document.createElement("div"); film.className = "intro-film";
@@ -304,7 +306,9 @@ export function runIntro(opts) {
   // START on the title goes straight into the video with the remembered projects (or all of them).
   // If no projects are found, it stops at the door and shows how to connect one (or the demo).
   async function autoStart() {
-    if (opts.mode === "phone") { hot.style.display = hint.style.display = ""; return; }
+    // Phone page: the door button may be cropped off screen (the video is centred in portrait), so START
+    // presses it for you and goes straight to pairing / demo.
+    if (opts.mode === "phone") { press(); return; }
     const r = await opts.check().catch(() => ({ projects: [] }));
     const projects = r.projects ?? [];
     started = true; hot.style.display = hint.style.display = "none";
