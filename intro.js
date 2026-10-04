@@ -7,7 +7,7 @@ const VW = 848, VH = 478;
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
-const CUT_T = 7.05; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
+const CUT_T = 7.1; // the camera has tilted up and the window is settled and still dark (planets appear after ~7.3 s)
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
@@ -379,12 +379,12 @@ export function runIntro(opts) {
     skip.style.display = "none";
     tr = { frame, W, H };
     canvas.style.transition = ""; canvas.style.opacity = "1";
-    const RISE = reduced ? 0 : 700, FALL = reduced ? 0 : 1500;
+    const RISE = reduced ? 0 : 420, FALL = reduced ? 0 : 1500; // fast rise: the video's planets (from ~7.3 s) are covered within a few frames
     const light = document.createElement("div");
     Object.assign(light.style, { position: "fixed", inset: "0", zIndex: 40, pointerEvents: "none", opacity: "0",
       background: "radial-gradient(circle at 50% 30%, #ffffff 0%, #f4fbff 22%, rgba(220,240,255,.96) 45%, rgba(190,225,255,.9) 75%, rgba(170,210,245,.85) 100%)",
       transform: "scale(.6)", transformOrigin: "50% 30%",
-      transition: `opacity ${RISE}ms cubic-bezier(.45,0,.55,1), transform ${RISE}ms cubic-bezier(.33,0,.67,1)` });
+      transition: `opacity ${RISE}ms cubic-bezier(.3,.55,.4,1), transform ${RISE}ms cubic-bezier(.33,0,.67,1)` });
     document.body.appendChild(light);
     video.style.transformOrigin = "50% 30%";
     video.style.transition = `transform ${RISE}ms cubic-bezier(.33,0,.67,1)`;
