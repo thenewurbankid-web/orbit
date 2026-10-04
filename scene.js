@@ -12,6 +12,8 @@ import { companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, 
 import * as fx from "./fx.js";
 import { bakePlanet, bakeNebula, NEBULA_CENTRES, KIND } from "./planets.js";
 import * as pfx from "./planetfx.js";
+import { createFrame, frameMetrics } from "./frame.js";
+import { makeDrone, makeFighter, makePod, makeHostile } from "./carriers.js";
 
 // Black board: soft grey text; only the active or important item is brighter.
 const C = {
@@ -28,7 +30,14 @@ export async function startScene({ canvas, kbd, reduced }) {
   const forceRender = new URLSearchParams(location.search).has("forcerender"); // testing only: keep rendering in a hidden tab
   // The loop never waits for input. rAF does not fire in hidden documents (and some embedded panes
   // report hidden while on screen), so a hidden page falls back to a slow timer instead of stopping.
-  const isHidden = () => false;
+  // Pause only in a genuinely hidden background tab: hidden AND unfocused for more than 5 s.
+  // (The Claude Browser pane reports hidden while on screen, but keeps focus/input.)
+  let hiddenSince = document.hidden && !document.hasFocus() ? performance.now() : 0;
+  const isHidden = () => {
+    if (forceRender || !document.hidden || document.hasFocus()) { hiddenSince = 0; return false; }
+    if (!hiddenSince) hiddenSince = performance.now();
+    return performance.now() - hiddenSince > 5000;
+  };
   const raf = (f) => (document.hidden ? setTimeout(() => f(performance.now()), forceRender ? 33 : 250) : requestAnimationFrame(f));
   let dirty = true, paused = false, rafId = 0, last = performance.now(), clock = 0, activeUntil = performance.now() + 3000, lastRender = 0;
   // ---------------- renderer, tier, passes ----------------
@@ -199,11 +208,12 @@ export async function startScene({ canvas, kbd, reduced }) {
     return (sel ? 10 : 0) + ({ planet: 4, pct: 3.5, moon: 2, issue: 1 }[k] ?? 1);
   }
   function placeLabels() {
-    const m = frameInset() + 6, top = W < 640 ? 80 : 96, bottom = H - frameInset() - 40;
+    const top = fm.y0 + (fm.phone ? 74 : 92), bottom = fm.y1 - 6;
     const items = [];
     for (const a of labels) {
       const { plate, w, h } = a.userData.label;
-      if (!a.parent) { glass.remove(plate.mesh); plate.tex.dispose(); labels.delete(a); continue; }
+      let root = a; while (root.parent) root = root.parent;
+      if (root !== world) { glass.remove(plate.mesh); plate.tex.dispose(); labels.delete(a); continue; }
       const op = a.material.opacity;
       a.getWorldPosition(_lp).project(camera);
       if (op < 0.02 || _lp.z > 1 || Math.abs(_lp.x) > 1.3 || Math.abs(_lp.y) > 1.3) { plate.mesh.visible = false; continue; }
@@ -211,15 +221,17 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     items.sort((p, q) => q.pr - p.pr);
     const placed = bracketPlate.visible && bracketPlate.readoutRect ? [bracketPlate.readoutRect] : [];
-    const hits = (r) => placed.some((q) => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
+    const P = 4; // breathing room between labels
+    const hits = (r) => placed.some((q) => r.x < q.x + q.w + P && r.x + r.w + P > q.x && r.y < q.y + q.h + P && r.y + r.h + P > q.y);
     for (const it of items) {
       // Clamp into the inner rectangle: near an edge the label shifts back inside (flips to the inner side).
-      let x = Math.min(Math.max(it.cx - it.w / 2, m), W - m - it.w);
+      const m = fm.x0 + 8, mr = fm.x1 - 8;
+      let x = Math.min(Math.max(it.cx - it.w / 2, m), mr - it.w);
       let y = Math.min(Math.max(it.cy - it.h / 2, top), bottom - it.h);
       let r = { x, y, w: it.w, h: it.h };
       if (hits(r)) {
         const tries = [[0, it.h + 2], [0, -(it.h + 2)], [0, 2 * (it.h + 2)], [it.w / 2 + 6, 0], [-(it.w / 2 + 6), 0]];
-        const ok = tries.map(([dx, dy]) => ({ x: Math.min(Math.max(x + dx, m), W - m - it.w), y: Math.min(Math.max(y + dy, top), bottom - it.h), w: it.w, h: it.h })).find((c) => !hits(c));
+        const ok = tries.map(([dx, dy]) => ({ x: Math.min(Math.max(x + dx, m), mr - it.w), y: Math.min(Math.max(y + dy, top), bottom - it.h), w: it.w, h: it.h })).find((c) => !hits(c));
         if (!ok) { it.plate.mesh.visible = false; continue; }
         r = ok;
       }
@@ -291,7 +303,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (!co) {
         // A planet: dark, restrained surface lit by one distant sun, thin rim, slow spin.
         const look = PLANET_LOOK[c.prefix] ?? PLANET_LOOK.default;
-        const kind = { BOX: KIND.desert, CLA: KIND.rocky, VIS: KIND.ocean }[c.prefix] ?? KIND.rocky;
+        const kind = { BOX: KIND.desert, CLA: KIND.rocky, VIS: KIND.ocean }[c.prefix] ?? [KIND.desert, KIND.rocky, KIND.ocean][ci % 3];
         const maps = bakePlanet(renderer, kind, hash(c.prefix) * 50, tier.mobile ? 1024 : 2048);
         // Matte: no specular hotspot, relief from the normal map along the terminator.
         const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), new THREE.MeshStandardMaterial({ map: maps.map, normalMap: maps.normalMap, normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1, metalness: 0 }));
@@ -359,6 +371,8 @@ export async function startScene({ canvas, kbd, reduced }) {
         placeMoon(ao, clock);
       });
     });
+    for (const [prefix, co] of companyObjs) if (!companies.some((c) => c.prefix === prefix)) { world.remove(co.group); companyObjs.delete(prefix); }
+    for (const [id, u] of ufos) if (!store.agents.some((a) => a.id === id)) { world.remove(u.g); ufos.delete(id); }
     for (const [id, ao] of agentObjs) if (!store.agents.some((a) => a.id === id)) { world.remove(ao.moon, ao.glow, ao.orbitLine, ao.label); agentObjs.delete(id); }
 
 
@@ -814,11 +828,11 @@ export async function startScene({ canvas, kbd, reduced }) {
     const text = chat.draft.trim();
     if (!text || !target) return;
     stopEditing();
-    try {
-      await act("comment", { issueId: target.id, text });
-      floatToStar(text, chat.agent);
-      chat.draft = ""; notice = `Sent as a comment on ${target.identifier}.`;
-    } catch (e) { notice = "Not sent: " + e.message; }
+    const a2 = store.agents.find((x) => x.id === chat.agent);
+    const pr = act("comment", { issueId: target.id, text });
+    sendDrone(chat.agent, a2?.company, `${a2?.name ?? "agent"} · ${target.identifier}`, pr);
+    try { await pr; chat.draft = ""; notice = `Sent as a comment on ${target.identifier}.`; }
+    catch (e) { notice = "Not sent: " + e.message; }
     drawSlate();
   }
 
@@ -826,7 +840,9 @@ export async function startScene({ canvas, kbd, reduced }) {
     const found = allQuestions().find((x) => x.q.id === qid); if (!found) return;
     stopEditing();
     try {
-      await answerQuestion(found, kind, drafts[qid] ||= { sel: {}, text: "" });
+      const pr = answerQuestion(found, kind, drafts[qid] ||= { sel: {}, text: "" });
+      launchFighter(qid, found.issue.identifier, pr);
+      await pr;
       feedAdd({ ts: new Date().toISOString(), company: found.company.prefix, text: `▲ ${found.issue.identifier} answer sent`, tone: "+", issueId: found.issue.id });
       wipeSlate(() => { sentQ.add(qid); notice = "Sent."; slate.openedAt = performance.now(); drawSlate(); });
     } catch (e) { notice = e.message; drawSlate(); }
@@ -1071,7 +1087,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       { k: "done", v: doneToday, label: "done today" },
       { k: "pct", v: overall, label: "overall · rough estimate" },
     ];
-    if (W >= 640) return all;
+    if (W >= 1100) return all;
+    if (W >= 640) return all.filter((x) => x.k !== "pct" && x.k !== "done"); // overall % is in the corner HUD
     const short = { work: "working", prog: "active", block: "blocked", wait: "for you" };
     return all.filter((x) => short[x.k]).map((x) => ({ ...x, label: short[x.k] }));
   }
@@ -1083,6 +1100,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       x.font = `300 14px ${HUDF}`; x.fillStyle = C.ink2; x.textAlign = "center"; x.textBaseline = "middle"; x.fillText("not connected to the Mac", w / 2, h / 2); sumPlate.end(); return;
     }
     const items = kpis();
+    if (store.mode === "demo") { x.font = `400 10px ${HUDF}`; x.fillStyle = "rgba(222,170,96,0.9)"; x.textAlign = "left"; x.textBaseline = "top"; x.fillText("DEMO", 2, 0); }
     const cw = w / items.length, big = Math.min(46, Math.max(26, cw * 0.42));
     items.forEach((it, k) => {
       const v = String(it.v);
@@ -1111,6 +1129,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   function drawPanel() {
     const x = panelPlate.begin();
     const { w, h } = panelPlate.rect;
+    { const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#15181b"); g.addColorStop(1, "#0c0e10"); x.fillStyle = g; x.fillRect(0, 0, w, h); }
     const a = 0.22 + panel.bright * 0.68;
     const col = (k = 1) => `rgba(190,194,198,${a * k})`;
     const total = (store.board?.intervalSec ?? 15) * 1000;
@@ -1147,116 +1166,34 @@ export async function startScene({ canvas, kbd, reduced }) {
   function wakePanel() { panel.bright = 1; panel.wokeAt = performance.now(); drawPanel(); }
 
   // ---------------- window frame and readout screens ----------------
-  const framePlate = new Plate("frame");
+  // Window frame: SVG overlay (frame.js), outside the WebGL post-processing.
+  const svgFrame = createFrame(document.body);
   const readouts = []; // {plate, t0, issueId, agentId, slot}
-  framePlate.mesh.renderOrder = -1;
-  // Frame: graphite with a near-invisible weave, chamfered 45° corners, notched top/bottom segments,
-  // 1 px hairlines, a metal hairline lit from the scene's sun direction, micro-labels, rangefinder ticks
-  // and a segmented overall-% line. Drawn on the overlay (sharp, outside post-processing).
-  function frameInset() { return W < 640 ? 14 : 26; }
-  const weave = (() => {
-    const c = document.createElement("canvas"); c.width = c.height = 6; const x = c.getContext("2d");
-    x.fillStyle = "#0d0e10"; x.fillRect(0, 0, 6, 6);
-    x.fillStyle = "#101114"; x.fillRect(0, 0, 3, 3); x.fillRect(3, 3, 3, 3); // ≤6% contrast twill
-    return c;
-  })();
-  let frameLook = 0, frameSun = new THREE.Vector2(1, 0), sweepAt = performance.now() + 8000;
-  function frameGeom(w, h) {
-    const t = frameInset(), c = W < 640 ? 7 : 12, n = W < 640 ? 4 : 6;
-    const tn0 = Math.round(w * 0.28), tn1 = Math.round(w * 0.72), bn0 = Math.round(w * 0.3), bn1 = Math.round(w * 0.7);
-    const inner = [[t + c, t], [tn0, t], [tn0 + n, t + n], [tn1 - n, t + n], [tn1, t], [w - t - c, t], [w - t, t + c], [w - t, h - t - c], [w - t - c, h - t],
-      [bn1, h - t], [bn1 - n, h - t - n], [bn0 + n, h - t - n], [bn0, h - t], [t + c, h - t], [t, h - t - c], [t, t + c]];
-    const C = c + 4;
-    const outer = [[C, 0], [w - C, 0], [w, C], [w, h - C], [w - C, h], [C, h], [0, h - C], [0, C]];
-    return { t, c, n, inner, outer, tn0, tn1, bn0, bn1 };
-  }
-  function pathOf(x, pts) { x.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) x.lineTo(p[0], p[1]); x.closePath(); }
-  function drawFrame(now = performance.now()) {
-    const x = framePlate.begin();
-    const { w, h } = framePlate.rect;
-    const g = frameGeom(w, h);
-    frameLook = look.x;
-    // Sun direction on screen, so the hairline is lit from where the planets are lit.
+  let fm = frameMetrics(1, 1);
+  function frameInset() { return fm.side; }
+  const frameSun = new THREE.Vector2(1, 0);
+  function updateFrame() {
     const sv = SUN.clone().transformDirection(camera.matrixWorldInverse);
     frameSun.set(sv.x, -sv.y).normalize();
-    x.save();
-    // Body.
-    x.beginPath(); pathOf(x, g.outer); pathOf(x, g.inner);
-    x.fillStyle = x.createPattern(weave, "repeat"); x.fill("evenodd");
-    // Wide, low-opacity specular sweep across the graphite; follows the sun and shifts with mouse/tilt.
-    {
-      const cx = w * (0.5 + frameSun.x * 0.35 + look.x * 0.08), cy = h * (0.5 + frameSun.y * 0.35 + look.y * 0.08);
-      const gx = x.createLinearGradient(cx - w * 0.6 * frameSun.x, cy - h * 0.6 * frameSun.y, cx + w * 0.4 * frameSun.x, cy + h * 0.4 * frameSun.y);
-      gx.addColorStop(0, "rgba(255,255,255,0)"); gx.addColorStop(0.72, "rgba(210,218,226,0.035)"); gx.addColorStop(0.86, "rgba(225,232,240,0.075)"); gx.addColorStop(1, "rgba(255,255,255,0)");
-      x.fillStyle = gx; x.fill("evenodd");
-    }
-    // Soft inner shadow into the view, then a 1 px dark gap: the view sits recessed behind glass.
-    x.save(); x.beginPath(); pathOf(x, g.inner); x.clip();
-    x.shadowColor = "rgba(0,0,0,0.85)"; x.shadowBlur = 18; x.lineWidth = 12; x.strokeStyle = "rgba(0,0,0,0.6)";
-    x.beginPath(); pathOf(x, g.inner); x.stroke(); x.restore();
-    x.lineWidth = 1; x.strokeStyle = "#000"; x.beginPath(); pathOf(x, g.inner); x.stroke();
-    // Outer bevel: crisp highlight on the sun-facing edges, darker on the opposite ones.
-    {
-      const o = g.outer.map(([a, b]) => [a + (a < w / 2 ? 0.5 : -0.5), b + (b < h / 2 ? 0.5 : -0.5)]);
-      for (let i = 0; i < o.length; i++) {
-        const A = o[i], B = o[(i + 1) % o.length], L = Math.hypot(B[0] - A[0], B[1] - A[1]) || 1;
-        const nx = (B[1] - A[1]) / L, ny = -(B[0] - A[0]) / L; // outward normal (clockwise path)
-        const f = nx * frameSun.x + ny * frameSun.y;
-        x.strokeStyle = f > 0 ? `rgba(225,232,240,${0.06 + f * 0.28})` : `rgba(0,0,0,${0.35 - f * 0.4})`;
-        x.beginPath(); x.moveTo(A[0], A[1]); x.lineTo(B[0], B[1]); x.stroke();
-      }
-    }
-    // Metal hairline on the inner edge, each segment lit by how much it faces the sun.
-    const sweepK = (now - sweepAt) / 2200; // a slow light sweep along the hairline every ~30 s
-    const per = []; let total = 0;
-    for (let i = 0; i < g.inner.length; i++) { const a = g.inner[i], b = g.inner[(i + 1) % g.inner.length]; const L = Math.hypot(b[0] - a[0], b[1] - a[1]); per.push([a, b, total, L]); total += L; }
-    for (const [a, b, s0, L] of per) {
-      const dx = (b[0] - a[0]) / L, dy = (b[1] - a[1]) / L;
-      const nx = -dy, ny = dx; // outward normal for this winding (into the frame)
-      const lit = Math.max(0, -(nx * frameSun.x + ny * frameSun.y));
-      const base = 0.1 + lit * 0.35;
-      if (sweepK >= 0 && sweepK <= 1 && !reduced) {
-        const pos = sweepK * total;
-        const gr = x.createLinearGradient(a[0], a[1], b[0], b[1]);
-        for (const f of [0, 0.25, 0.5, 0.75, 1]) { const d = Math.abs(s0 + f * L - pos); gr.addColorStop(f, `rgba(205,212,220,${base + Math.max(0, 1 - d / 90) * 0.55})`); }
-        x.strokeStyle = gr;
-      } else x.strokeStyle = `rgba(190,198,206,${base})`;
-      x.beginPath(); x.moveTo(a[0] + nx * 1.5, a[1] + ny * 1.5); x.lineTo(b[0] + nx * 1.5, b[1] + ny * 1.5); x.stroke();
-    }
-    if (sweepK > 1) sweepAt = now + 30000;
-    // Rangefinder ticks along the sides.
-    x.strokeStyle = "rgba(200,206,212,0.16)";
-    for (let y = g.t + g.c + 20, k = 0; y < h - g.t - g.c - 20; y += 24, k++) {
-      const len = k % 5 === 0 ? 6 : 3;
-      x.beginPath(); x.moveTo(g.t - 4 - len + 0.5, y + 0.5); x.lineTo(g.t - 4 + 0.5, y + 0.5); x.stroke();
-      x.beginPath(); x.moveTo(w - g.t + 4 - 0.5, y + 0.5); x.lineTo(w - g.t + 4 + len - 0.5, y + 0.5); x.stroke();
-    }
-    // Segmented overall-% line along the top notch.
+    // Light comes from the top-left (as in the intro video), nudged toward the scene's sun.
+    const lx = 0.7 * 0.65 - frameSun.x * 0.35, ly = 0.7 * 0.65 - frameSun.y * 0.35, L = Math.hypot(lx, ly) || 1;
     let sw = 0, sp = 0;
     for (const c0 of store.board?.companies ?? []) { const pr = companyProgress(c0); if (pr != null) { const nn = c0.issues.filter((i) => OPEN.includes(i.status)).length; sw += nn; sp += nn * pr; } }
-    const overall = sw ? sp / sw : 0, segs = 40, sx0 = g.tn0 + g.n + 6, sx1 = g.tn1 - g.n - 6, sy = Math.max(3, g.t - 6);
-    const sl = (sx1 - sx0) / segs;
-    for (let k = 0; k < segs; k++) { x.fillStyle = k / segs < overall / 100 ? "rgba(200,206,212,0.5)" : "rgba(200,206,212,0.1)"; x.fillRect(Math.round(sx0 + k * sl), sy, Math.max(1, Math.round(sl) - 2), 2); }
-    // Micro-labels.
-    if (W >= 640) {
-      x.font = `300 8.5px ${HUDF}`; x.fillStyle = "rgba(190,196,202,0.36)"; x.textBaseline = "middle";
-      x.fillText("OBS-01 · SYS 3", g.t + g.c + 8, g.t / 2);
-      x.textAlign = "right"; x.fillText(`OVERALL ${Math.round(overall)}% · ROUGH`, w - g.t - g.c - 8, g.t / 2);
-      x.textAlign = "left"; x.fillText("UPLINK · PAPERCLIP 3100", g.t + g.c + 8, h - g.t / 2);
-      x.textAlign = "right"; x.fillText(`AZ ${(rig.yaw * 57.3).toFixed(1)}° · EL ${(rig.pitch * 57.3).toFixed(1)}° · R ${rig.dist.toFixed(0)}`, w - g.t - g.c - 8, h - g.t / 2);
-      x.textAlign = "left";
-    }
-    x.restore();
-    framePlate.end();
+    const s0 = summary();
+    svgFrame.update(W, H, [lx / L, ly / L], {
+      tl: ["OBS-01 · SYS 3", `${s0.inProgress} ACTIVE · ${s0.blocked} BLOCKED`],
+      tr: [`OVERALL ${sw ? Math.round(sp / sw) : 0}% · ROUGH`, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })],
+      bl: [store.mode === "demo" ? "UPLINK · DEMO DATA" : "UPLINK · PAPERCLIP 3100", store.mode === "remote" ? "VIA PHONE LINK" : "LOCAL"],
+      br: [`AZ ${(rig.yaw * 57.3).toFixed(1)}° · EL ${(rig.pitch * 57.3).toFixed(1)}°`, `R ${rig.dist.toFixed(0)}`],
+    });
   }
   function readoutSlots() {
-    const m = frameInset() + 6;
-    if (W < 640) return [{ x: m + 4, y: (W < 640 ? 74 : 90), w: W - 2 * m - 8 }, { x: m + 4, y: H - 34 - m - 50, w: W - 2 * m - 8 }];
+    if (fm.phone) return [{ x: fm.x0 + 8, y: fm.y0 + 78, w: fm.x1 - fm.x0 - 16 }, { x: fm.x0 + 8, y: fm.y1 - 58, w: fm.x1 - fm.x0 - 16 }];
     const rw = 250, chatOpen = slate.kind && W >= 860;
-    const slots = [
-      { x: m + 4, y: H * 0.28, w: rw }, { x: m + 4, y: H * 0.5, w: rw }, { x: m + 4, y: H - 34 - m - 58, w: rw },
-    ];
-    if (!chatOpen) slots.push({ x: W - m - rw - 4, y: H * 0.28, w: rw }, { x: W - m - rw - 4, y: H * 0.5, w: rw }, { x: W - m - rw - 4, y: H - 34 - m - 58, w: rw });
+    const lx = fm.x0 + fm.cb + 10, rx = fm.x1 - fm.cb - 10 - rw;
+    const ys = [fm.y0 + fm.ct + 40, (fm.y0 + fm.y1) / 2, fm.y1 - 92];
+    const slots = ys.map((y) => ({ x: lx, y, w: rw }));
+    if (!chatOpen) slots.push(...ys.map((y) => ({ x: rx, y, w: rw })));
     return slots;
   }
   const readoutQueue = [];
@@ -1387,9 +1324,9 @@ export async function startScene({ canvas, kbd, reduced }) {
     const goal = feed.open ? 1 : 0;
     if (Math.abs(goal - feed.k) > 0.001) { feed.k += (goal - feed.k) * (reduced ? 1 : Math.min(1, dt * 12)); activeUntil = Math.max(activeUntil, performance.now() + 50); }
     else feed.k = goal;
-    const fw = feedWidth(), m = frameInset();
-    const top = m + 1, hgt = H - 2 * m - 36;
-    const xPos = Math.round(W - m - 1 - fw * feed.k);
+    const fw = feedWidth();
+    const top = fm.y0 + fm.lift + 2, hgt = fm.y1 - top - 2;
+    const xPos = Math.round(fm.x1 - fw * feed.k);
     if (feedPlate.rect.w !== fw || feedPlate.rect.h !== hgt) { feedPlate.place(xPos, top, fw, hgt); drawFeed(); }
     feedPlate.mesh.position.set(xPos + fw / 2, -(top + hgt / 2), 0); feedPlate.rect.x = xPos;
     feedPlate.mesh.visible = feed.k > 0.01; feedPlate.visible = feed.k > 0.5;
@@ -1447,7 +1384,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     bracketPlate.mesh.position.set(sx - size / 2 + pw / 2, -(sy - ph / 2 + ph / 2), 0);
     bracketPlate.rect.x = sx - size / 2; bracketPlate.rect.y = sy - ph / 2;
-    bracketPlate.readoutRect = { x: sx + size / 2 + 8, y: sy - 18, w: 210, h: 36 }; // labels keep clear of this
+    bracketPlate.readoutRect = { x: sx + size / 2 + 4, y: sy - 24, w: 230, h: 48 }; // labels keep clear of this
     if (!bracketPlate.visible) bracketPlate.show(true);
   }
 
@@ -1653,6 +1590,175 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
   }
 
+  // ---------------- message carriers: drones out, pods in, hostile ships for questions ----------------
+  const flights = [];
+  const hostiles = new Map(); // question id → {g, issueId, slot, state, t, from, hp}
+  const RED = new THREE.Color(1, 0.25, 0.15).multiplyScalar(2.5);
+  // A point in front of our window: ndc (x, y) at distance d from the camera.
+  function viewPoint(nx, ny, d) {
+    const p = new THREE.Vector3(nx, ny, 0.5).unproject(camera).sub(camera.position).normalize();
+    return camera.position.clone().addScaledVector(p, d);
+  }
+  const windowBottom = () => viewPoint(0, fm ? 1 - 2 * ((fm.y1 - 30) / H) : -0.8, 3.5);
+  function targetFor(agentId, company) {
+    const ao = agentId ? agentObjs.get(agentId) : null; const co = companyObjs.get(company);
+    return ao ? () => ao.pos : co ? () => co.center : null;
+  }
+  function trail(p, col, n = 1) { for (let i = 0; i < n; i++) particles.emit(p.clone(), v3().randomDirection().multiplyScalar(0.05), col, GREY, 0.18, 0.4); }
+  function orient(g, from, to, bank) { g.lookAt(to); g.rotateZ(bank); }
+  function fizzle(pos) { for (let i = 0; i < 26; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.6 + Math.random()), RED, GREY, 0.3, 0.6); }
+  function sparks(pos, col) { for (let i = 0; i < 40; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.8 + Math.random() * 1.6), col, GREY, 0.3, 0.9); }
+
+  // Outgoing message: a drone flies out, waits for the POST, drops its data cube with a beam, flies back.
+  function sendDrone(agentId, company, label, promise) {
+    const tgt = targetFor(agentId, company);
+    if (!tgt || reduced) return promise.then(() => readout(`▲ Delivered · ${label}`, "+"), (e) => readout(`▼ Not delivered · ${e.message}`, "-"));
+    const g = makeDrone(); g.scale.setScalar(0.7); world.add(g);
+    const f = { g, kind: "drone", t: 0, phase: "out", start: windowBottom(), result: null, label };
+    promise.then(() => (f.result = "ok"), (e) => { f.result = "fail"; f.err = e.message; });
+    f.update = (dt) => {
+      f.t += dt;
+      const dest = tgt().clone().add(new THREE.Vector3(0, 0.75, 0));
+      g.userData.rotors.forEach((r, i) => (r.rotation.z += dt * (20 + i)));
+      if (f.phase === "out") {
+        const k = Math.min(1, f.t / 2.2), e = fx.easeInOut(k);
+        const mid = f.start.clone().lerp(dest, 0.5).add(new THREE.Vector3(0, 1.5, 0));
+        const p = new THREE.QuadraticBezierCurve3(f.start, mid, dest).getPoint(e);
+        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), Math.sin(k * Math.PI) * 0.4);
+        g.position.copy(p); trail(p, new THREE.Color(0.5, 0.85, 1).multiplyScalar(1.4));
+        if (f.result === "fail" && k > 0.4) { fizzle(p); readout(`▼ Not delivered · ${f.err}`, "-"); return false; }
+        if (k >= 1) { f.phase = "wait"; f.t = 0; }
+      } else if (f.phase === "wait") {
+        g.position.copy(dest).add(new THREE.Vector3(0, Math.sin(f.t * 3) * 0.03, 0));
+        if (f.result === "ok") { f.phase = "drop"; f.t = 0; }
+        else if (f.result === "fail" || f.t > 25) { fizzle(g.position); readout(`▼ Not delivered · ${f.err ?? "no reply"}`, "-"); return false; }
+      } else if (f.phase === "drop") {
+        const c = g.userData.cube; c.position.y = -0.07 - f.t * 1.2; c.material.color.multiplyScalar(0.97);
+        if (f.t > 0.6) { sparks(tgt().clone(), new THREE.Color(0.6, 0.9, 1).multiplyScalar(1.5)); readout(`▲ Delivered · ${label}`, "+"); f.phase = "back"; f.t = 0; f.from = g.position.clone(); c.visible = false; }
+      } else {
+        const k = Math.min(1, f.t / 1.8); const p = f.from.clone().lerp(windowBottom(), fx.easeInOut(k));
+        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0); g.position.copy(p);
+        if (k >= 1) return false;
+      }
+      return true;
+    };
+    flights.push(f); activeUntil = performance.now() + 3000;
+  }
+
+  // Incoming update: a pod launches from the moon and opens at our window, then the readout appears.
+  function incomingPod(agentId, company, amber, onArrive) {
+    const tgt = targetFor(agentId, company);
+    if (!tgt || reduced || flights.length >= 6) return onArrive();
+    const g = makePod(amber); world.add(g);
+    const from = tgt().clone(); const side = (Math.random() - 0.5) * 1.2;
+    const f = { g, kind: "pod", t: 0, update: (dt) => {
+      f.t += dt; const k = Math.min(1, f.t / 2.4), e = fx.easeInOut(k);
+      const to = viewPoint(side, 0.1, 4.5);
+      const mid = from.clone().lerp(to, 0.5).add(new THREE.Vector3(0, 2, 0));
+      const p = new THREE.QuadraticBezierCurve3(from, mid, to).getPoint(e);
+      orient(g, g.position, p.clone().add(p.clone().sub(g.position)), Math.sin(k * 6) * 0.3);
+      g.position.copy(p); g.scale.setScalar(0.6 + k * 0.5);
+      trail(p, amber ? new THREE.Color(1, 0.65, 0.3).multiplyScalar(1.5) : new THREE.Color(0.9, 0.92, 0.95));
+      g.userData.beacon.visible = Math.floor(f.t * 4) % 2 === 0;
+      if (k >= 1) { sparks(p, amber ? new THREE.Color(1, 0.6, 0.25).multiplyScalar(1.6) : new THREE.Color(0.9, 0.95, 1).multiplyScalar(1.3)); onArrive(); return false; }
+      return true;
+    } };
+    flights.push(f); activeUntil = performance.now() + 3000;
+  }
+
+  // Hostile ships: one per waiting question (up to 4), hovering near the edges of our view.
+  const HOVER = [[-0.62, 0.42], [0.62, 0.42], [-0.66, -0.25], [0.66, -0.25]];
+  let hostileBadge = null;
+  function syncHostiles(instant) {
+    const qs = allQuestions();
+    const want = new Set(qs.map((x) => x.q.id));
+    for (const [id, h] of hostiles) if (!want.has(id) && !h.engaged && h.state !== "dying" && h.state !== "retreat") { h.state = "retreat"; h.t = 0; h.from = h.g.position.clone(); }
+    let slot = 0;
+    for (const { issue, company, q } of qs) {
+      if (hostiles.has(q.id)) { slot = Math.max(slot, hostiles.get(q.id).slot + 1); continue; }
+      if ([...hostiles.values()].filter((h) => h.state !== "dying" && h.state !== "retreat").length >= 4) continue;
+      const used = new Set([...hostiles.values()].map((h) => h.slot));
+      const sl = [0, 1, 2, 3].find((k) => !used.has(k)) ?? 0;
+      const g = makeHostile(); world.add(g);
+      const tgt = targetFor(issue.assigneeAgentId, company.prefix);
+      const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: instant || reduced || !tgt ? "hover" : "arrive", t: 0, from: tgt ? tgt().clone() : viewPoint(0, 0, 30), fire: 2 + Math.random() * 4 };
+      g.position.copy(h.state === "hover" ? viewPoint(...HOVER[sl], 5) : h.from);
+      hostiles.set(q.id, h);
+      activeUntil = performance.now() + 3000;
+    }
+    const extra = qs.length - Math.min(4, qs.length);
+    if (hostileBadge) { world.remove(hostileBadge); hostileBadge = null; }
+    if (extra > 0) { hostileBadge = textSprite(`+${extra} more waiting`, { px: 34, color: C.amber, font: MONO, weight: 500 }); hostileBadge.material.opacity = 0.9; world.add(hostileBadge); }
+  }
+  const tracerMat = new THREE.LineBasicMaterial({ color: new THREE.Color(1, 0.62, 0.25).multiplyScalar(2.6), transparent: true, opacity: 0, depthWrite: false });
+  const tracer = new THREE.Line(new THREE.BufferGeometry().setFromPoints([v3(), v3()]), tracerMat); world.add(tracer);
+  let tracerT = 0;
+  function updateHostiles(dt) {
+    tracerT -= dt; tracerMat.opacity = Math.max(0, tracerT * 4);
+    for (const [id, h] of hostiles) {
+      h.t += dt; const home = viewPoint(...HOVER[h.slot], 5).add(new THREE.Vector3(Math.sin(clock * 0.4 + h.slot) * 0.15, Math.cos(clock * 0.3 + h.slot) * 0.1, 0));
+      h.g.userData.lights.forEach((l, i) => (l.visible = reduced || Math.floor(clock * 2 + i) % 3 !== 0));
+      if (h.state === "arrive") {
+        const k = Math.min(1, h.t / 3), e = fx.easeInOut(k);
+        const p = h.from.clone().lerp(home, e); h.g.lookAt(camera.position); h.g.position.copy(p);
+        trail(p.clone().add(new THREE.Vector3(0, 0, -0.2)), new THREE.Color(1, 0.55, 0.2).multiplyScalar(1.4));
+        if (k >= 1) { h.state = "hover"; h.t = 0; }
+      } else if (h.state === "hover") {
+        h.g.position.lerp(home, Math.min(1, dt * 3)); h.g.lookAt(camera.position);
+        if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 5 + Math.random() * 6; const a = h.g.position, b = viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8);
+          tracer.geometry.attributes.position.setXYZ(0, a.x, a.y, a.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.25; } }
+      } else if (h.state === "retreat") {
+        const k = Math.min(1, h.t / 2); h.g.position.copy(h.from).add(new THREE.Vector3(0, 0, -30 * k * k)); h.g.rotation.z += dt * 2;
+        if (k >= 1) { world.remove(h.g); hostiles.delete(id); }
+      } else if (h.state === "dying") { sparks(h.g.position, new THREE.Color(1, 0.6, 0.25).multiplyScalar(2)); world.remove(h.g); hostiles.delete(id); }
+    }
+    if (hostileBadge) hostileBadge.position.copy(viewPoint(0.62, 0.62, 5));
+    if (hostiles.size) activeUntil = Math.max(activeUntil, performance.now() + 100);
+  }
+
+  // Answering: the fighter carries the answer; the dogfight outcome is the real POST result.
+  function launchFighter(qid, label, promise) {
+    const h = hostiles.get(qid);
+    if (!h || reduced) {
+      return promise.then(() => { if (h) h.state = "dying"; readout(`▲ Answered · ${label}`, "+"); }, (e) => readout(`▼ Answer not sent · ${e.message}`, "-"));
+    }
+    h.engaged = true;
+    const g = makeFighter(); g.scale.setScalar(0.55); world.add(g);
+    const f = { g, kind: "fighter", t: 0, phase: "in", start: windowBottom(), result: null };
+    promise.then(() => (f.result = "ok"), (e) => { f.result = "fail"; f.err = e.message; });
+    f.update = (dt) => {
+      f.t += dt;
+      const hp = h.g.position;
+      if (f.phase === "in") {
+        const k = Math.min(1, f.t / 1.2), p = f.start.clone().lerp(hp.clone().add(new THREE.Vector3(0.6, 0.2, 0.4)), fx.easeInOut(k));
+        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), -0.5); g.position.copy(p);
+        g.userData.engines.forEach((e) => trail(e.getWorldPosition(v3()), new THREE.Color(0.75, 0.9, 1).multiplyScalar(1.4)));
+        if (k >= 1) { f.phase = "fight"; f.t = 0; }
+      } else if (f.phase === "fight") {
+        // Circle the hostile, trading shots, until the answer lands (at least 1.5 s).
+        const a = f.t * 3.2, p = hp.clone().add(new THREE.Vector3(Math.cos(a) * 0.7, Math.sin(a * 1.3) * 0.25, Math.sin(a) * 0.7));
+        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0.7); g.position.copy(p);
+        g.userData.engines.forEach((e) => trail(e.getWorldPosition(v3()), new THREE.Color(0.75, 0.9, 1).multiplyScalar(1.3)));
+        if (Math.random() < dt * 3) { const b = hp; tracer.geometry.attributes.position.setXYZ(0, p.x, p.y, p.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.15; }
+        if (f.t > 1.5 && f.result === "ok") { h.state = Math.random() < 0.5 ? "dying" : "retreat"; h.t = 0; h.from = hp.clone(); readout(`▲ Answered · ${label}`, "+"); f.phase = "home"; f.t = 0; f.from = p.clone(); }
+        else if (f.t > 1.5 && (f.result === "fail" || f.t > 25)) { fizzle(p); readout(`▼ Answer not sent · ${f.err ?? "no reply"} · question still open`, "-"); h.engaged = false; f.phase = "driven"; f.t = 0; f.from = p.clone(); }
+      } else if (f.phase === "home") {
+        const k = Math.min(1, f.t / 1.4), p = f.from.clone().lerp(windowBottom(), fx.easeInOut(k));
+        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0); g.position.copy(p); if (k >= 1) return false;
+      } else {
+        g.position.add(new THREE.Vector3(-2, -1.2, -3).multiplyScalar(dt)); g.rotation.x += dt * 4; g.rotation.z += dt * 3;
+        if (Math.random() < 0.4) particles.emit(g.position.clone(), v3(), RED, GREY, 0.25, 0.4);
+        if (f.t > 2) return false;
+      }
+      return true;
+    };
+    flights.push(f); activeUntil = performance.now() + 4000;
+  }
+  function updateFlights(dt) {
+    for (let i = flights.length - 1; i >= 0; i--) { if (flights[i].update(dt) === false) { world.remove(flights[i].g); flights.splice(i, 1); } }
+    if (flights.length) activeUntil = Math.max(activeUntil, performance.now() + 100);
+  }
+
   // ---------------- events: one table maps every detected change to an effect ----------------
   // tone: + positive (cool white/teal), - negative (amber/red), 0 neutral.
   // fx: transient effect (big ones play one at a time, small ones two at a time).
@@ -1686,7 +1792,10 @@ export async function startScene({ canvas, kbd, reduced }) {
     const ev = EVENTS[type]; if (!ev) return;
     lastEventAt = performance.now();
     const mark = ev.tone === "+" ? "▲" : ev.tone === "-" ? "▼" : "•";
-    readout(`${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null);
+    const show = () => readout(`${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null);
+    const incoming = ["comment", "commit", "review", "blocked", "unblocked", "progressUp", "progressDown", "failed"].includes(type);
+    if (incoming) incomingPod(ctx.agentId, ctx.company, false, () => readout(`Incoming · ${ctx.agentId ? agentObjs.get(ctx.agentId)?.data?.name ?? "" : ctx.company ?? ""} · ${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null));
+    else show();
     feedAdd({ ts: new Date().toISOString(), company: ctx.company ?? null, text: `${mark} ${ev.text(ctx.label, ctx.detail)}`, tone: ev.tone, issueId: ctx.issueId ?? null, agentId: ctx.agentId ?? null });
     blip(ev.tone === "+" ? 880 : ev.tone === "-" ? 330 : 600, 0.09);
     if (!ev.fx || reduced) return;
@@ -1793,6 +1902,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       }
       for (const [qid, i] of prevQs) if (!nowQs.has(qid)) fire("answered", { label: i.identifier, issueId: i.id, company: i.company });
     }
+    syncHostiles(firstBoard);
     firstBoard = false;
     syncPersistent();
     drawSummary(); drawSlate();
@@ -1847,6 +1957,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (store.mode === "remote") { if (store.link.state === "connected") { slate.forced = false; if (slate.kind === "link") closeSlate(); } else if (slate.kind !== "link") openSlate("link", true); else drawSlate(); }
     if (store.mode === "lost") { notice = store.link.error || "Open this page from the QR code on your Mac's board."; openSlate("notice", true); }
   });
+  store.on("mode", (m) => { if (m === "demo") { slate.forced = false; if (slate.kind === "notice" || slate.kind === "link") closeSlate(); notice = ""; syncSky(); drawSummary(); drawPanel(); updateFrame(); } });
+  store.on("demoOut", ({ agentId, company, label }) => sendDrone(agentId, company, label, new Promise((r) => setTimeout(r, 1500))));
   store.on("listview", (show) => { paused = show; if (!show) { dirty = true; kick(); } });
   function openNotice() { notice = "Waiting for the board…"; openSlate("notice"); }
 
@@ -1865,18 +1977,22 @@ export async function startScene({ canvas, kbd, reduced }) {
     film.uniforms.uAspect.value = W / H;
     film.uniforms.uRes.value.set(W * dpr, H * dpr);
     const safeTop = 8, gut = 16;
-    sumPlate.place(gut + 30, safeTop + 8, W - gut * 2 - 60, W < 640 ? 62 : 72); drawSummary();
-    framePlate.place(0, 0, W, H); drawFrame();
-    handlePlate.place(W - frameInset() - 19, H * 0.42, 18, 80); drawHandle();
-    feedPlate.place(W, frameInset() + 1, feedWidth(), H - 2 * frameInset() - 36); drawFeed();
-    { const g = frameGeom(W, H); panelPlate.place(Math.max(g.t + 4, g.bn0 - (W < 640 ? 60 : 90)), H - g.t - g.n - 28, Math.min(W - 2 * g.t - 8, (g.bn1 - g.bn0) + (W < 640 ? 120 : 180)), 26); }
+    fm = frameMetrics(W, H);
+    void safeTop;
+    if (fm.phone) sumPlate.place(fm.x0 + 4, fm.y0 + 8, fm.x1 - fm.x0 - 8, 62);
+    else sumPlate.place(fm.x0 + fm.ct + 150, fm.y0 + fm.lift + 4, fm.x1 - fm.x0 - 2 * fm.ct - 300, 72);
+    drawSummary();
+    updateFrame();
+    handlePlate.place(fm.x1 - 19, H * 0.42, 18, 80); drawHandle();
+    feedPlate.place(W, fm.y0, feedWidth(), fm.y1 - fm.y0); drawFeed();
+    panelPlate.place(fm.strip.x + 1, fm.strip.y + 1, fm.strip.w - 2, fm.strip.h - 2);
     drawPanel();
     tickPlate.show(false); // the ticker is replaced by readout screens on the frame
     // Main slate: right column on wide screens, lower sheet on phones.
     const wide = W >= 860;
     let area;
-    if (wide) { const w = slate.kind === "chat" ? 400 : Math.min(460, Math.round(W * 0.38)); area = { x: W - w - gut - 8, y: 104, w, h: H - 104 - 70 }; }
-    else { const h = Math.round(H * (slate.kind === "pair" || slate.kind === "link" || slate.kind === "notice" ? 0.72 : 0.6)); area = { x: gut, y: H - h - 50, w: W - gut * 2, h }; }
+    if (wide) { const w = slate.kind === "chat" ? 400 : Math.min(460, Math.round(W * 0.38)); area = { x: fm.x1 - w - 14, y: fm.y0 + fm.ct + 40, w, h: fm.y1 - fm.y0 - fm.ct - 52 }; }
+    else { const h = Math.round((fm.y1 - fm.y0) * (slate.kind === "pair" || slate.kind === "link" || slate.kind === "notice" ? 0.74 : 0.6)); area = { x: fm.x0 + 6, y: fm.y1 - h - 6, w: fm.x1 - fm.x0 - 12, h }; }
     slate.area = area;
     slate.plate.place(area.x, area.y, area.w, area.h);
     viewOffset.tx = slate.kind ? (wide ? area.w / 2 + gut : 0) : 0;
@@ -1986,6 +2102,10 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (hit.plate === slate.plate) return; // tap on the glass with nothing there
     }
     if (dbl) { backOut(); return; }
+    for (const h of hostiles.values()) {
+      const p = h.g.position.clone().project(camera); const sx = (p.x * 0.5 + 0.5) * W, sy = (-p.y * 0.5 + 0.5) * H;
+      if (Math.hypot(sx - e.clientX, sy - e.clientY) < 44) { goIssue(h.issueId); return; }
+    }
     const prefer = { sky: "company", company: "agent", agent: "issue", issue: "issue" }[view.level];
     const pk = pickWorld(e.clientX, e.clientY, prefer);
     if (!pk) return;
@@ -2047,9 +2167,14 @@ export async function startScene({ canvas, kbd, reduced }) {
   window.__observatory = perf;
   if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
-  document.addEventListener("visibilitychange", () => { cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; if (!paused) rafId = raf(frame); });
+  const resume = () => { hiddenSince = 0; if (paused) return; cancelAnimationFrame(rafId); clearTimeout(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
+  document.addEventListener("visibilitychange", resume);
+  addEventListener("focus", resume);
+  addEventListener("pointerdown", () => { if (!rafId) resume(); }, true);
+  addEventListener("keydown", () => { if (!rafId) resume(); }, true);
 
   function frame(now) {
+    if (isHidden()) { rafId = 0; return; } // paused until visibility, focus or input
     try { frameBody(now); } catch (e) { console.error("[observatory] frame", e); }
     if (!rafId && !paused) rafId = raf(frame);
   }
@@ -2158,6 +2283,8 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     updateUfos(dt, clock);
     updatePersistent(dt);
+    updateFlights(dt);
+    updateHostiles(dt);
     if (persist.size && !reduced) activeUntil = Math.max(activeUntil, now + 100);
     particles.update(dt);
 
@@ -2179,12 +2306,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (now < sumAnimUntil) drawSummary();
     updateBrackets();
     placeLabels();
-    {
-      const sv = SUN.clone().transformDirection(camera.matrixWorldInverse);
-      const sweeping = now >= sweepAt && now <= sweepAt + 2400;
-      if (sweeping || Math.abs(sv.x - frameSun.x) + Math.abs(-sv.y - frameSun.y) > 0.08 || Math.abs(look.x - frameLook) > 0.03 || Math.abs(look.y - (frame._ly ?? 0)) > 0.03 || Math.floor(now / 1000) !== frame._sec) { frame._sec = Math.floor(now / 1000); frame._ly = look.y; drawFrame(now); }
-      if (sweeping) activeUntil = Math.max(activeUntil, now + 50);
-    }
+    if (Math.floor(now / 1000) !== frame._sec) { frame._sec = Math.floor(now / 1000); updateFrame(); }
     pumpReadouts(now);
     placeFeed(dt);
     // Thin leader line from the selected moon to the comms panel.
@@ -2229,7 +2351,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   // Idle repaint for the countdown ring and live data even with reduced motion.
-  setInterval(() => { drawPanel(); dirty = true; if (!rafId && !paused && !isHidden()) rafId = raf(frame); }, 1000);
+  setInterval(() => { if (isHidden()) return; drawPanel(); dirty = true; if (!rafId && !paused) rafId = raf(frame); }, 1000);
 
   layout();
   syncSky();

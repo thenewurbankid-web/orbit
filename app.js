@@ -71,9 +71,10 @@ async function hostLoad() {
   } catch (e) { store.emit("error", e.message); }
 }
 
+let hostEs = null;
 function hostStream() {
   // EventSource cannot send headers, so the key rides in the query string here (LAN only).
-  const es = new EventSource("api/chat/stream" + (key ? `?key=${encodeURIComponent(key)}` : ""));
+  const es = hostEs = new EventSource("api/chat/stream" + (key ? `?key=${encodeURIComponent(key)}` : ""));
   es.onmessage = (ev) => {
     let e; try { e = JSON.parse(ev.data); } catch { return; }
     if (e.type === "msg") upsertMsg(e.msg);
@@ -101,6 +102,7 @@ function watchEta() {
 
 // One entry point for every write: the scene and the list view both call this.
 export async function act(action, payload = {}) {
+  if (store.mode === "demo") return demo.act(action, payload);
   if (store.mode === "host") {
     if (!hostActions[action]) throw new Error("unknown action");
     return hostActions[action](payload);
@@ -590,6 +592,30 @@ setInterval(() => { const c = document.getElementById("lcount"); if (c) c.textCo
 setInterval(() => { if (store.mode === "host" && Date.now() > store.countdownAt + 1500) { store.countdownAt = Date.now() + 5000; hostLoad(); } }, 1000);
 
 // ---------------- boot ----------------
+// ---------------- demo mode ----------------
+let demo = null;
+export async function startDemo() {
+  if (store.mode === "demo") return;
+  try { hostEs?.close(); } catch {}
+  const { createDemo } = await import("./demo.js");
+  store.mode = "demo";
+  demo = createDemo({ setBoard, setLog, addLog, upsertMsg, setChat, setAgents, emit: (ev, d) => store.emit(ev, d) });
+  store.emit("mode", "demo");
+  demo.start();
+}
+
+// Mac: ask the server to poll again, then reload the board.
+async function retryConnect() {
+  try { await http("api/refresh", { method: "POST" }); } catch {}
+  try { const b = await http("api/board"); store.mode = "host"; setBoard(b); } catch {}
+}
+function projectCheck() {
+  const b = store.board;
+  if (store.mode !== "host" || !b) return { found: false, names: [], reason: store.link.error || "The board server did not answer." };
+  if (!b.companies?.length) return { found: false, names: [], reason: b.error ? `Paperclip did not answer (${b.error}).` : "Paperclip has none of the watched companies." };
+  return { found: true, names: b.companies.map((c) => c.name) };
+}
+
 async function boot() {
   const offer = new URLSearchParams(location.hash.slice(1)).get("o");
   if (offer) startRemote(offer);
@@ -607,6 +633,23 @@ async function boot() {
     }
   }
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Intro (door → cockpit → window). Skipped if it played in the last hour.
+  try {
+    const intro = await import("./intro.js");
+    if (!intro.shouldSkipIntro()) {
+      intro.runIntro({
+        mode: store.mode === "host" ? "mac" : "phone", canvas: $("sky"), reduced,
+        videoSrc: "assets/intro.mp4" + (key && store.mode === "host" ? `?key=${encodeURIComponent(key)}` : ""),
+        check: async () => { await new Promise((r) => setTimeout(r, 700)); return projectCheck(); },
+        onRetry: retryConnect,
+        linkView: () => ({ ...store.link, offer: Boolean(offer) }),
+        onLink: (cb) => store.on("link", cb),
+        phoneProjects: () => ({ names: (store.board?.companies ?? []).map((c) => c.name) }),
+        copy: copyText,
+        onDemo: () => startDemo(),
+      });
+    }
+  } catch (e) { console.error("intro", e); $("sky").style.opacity = "1"; }
   try {
     const { startScene } = await import("./scene.js");
     await startScene({ canvas: $("sky"), kbd: $("kbd"), reduced });
