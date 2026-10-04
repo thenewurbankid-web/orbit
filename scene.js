@@ -1781,9 +1781,11 @@ export async function startScene({ canvas, kbd, reduced }) {
     const what = action === "stop"
       ? `Pauses ${plan.pause.length} agent${plan.pause.length === 1 ? "" : "s"}${plan.cancel.length ? ` and cancels ${plan.cancel.length} running job${plan.cancel.length === 1 ? "" : "s"}` : ""}. Nothing else in Paperclip changes, and you can start it again here.`
       : `Resumes ${plan.resume.length || "its"} agent${plan.resume.length === 1 ? "" : "s"} and wakes them so they pick up their work.`;
-    const p = ui.frostPanel(`<h2>${action === "stop" ? "STOP" : "START"} WORK · ${c.name.toUpperCase()}</h2><p>${what}</p><div class="btns"><button class="go">${action === "stop" ? "STOP WORK" : "START WORK"}</button><button class="dim no">CANCEL</button></div><p class="err" style="color:#ff9a8a"></p>`, { width: 460 });
+    const p = ui.frostPanel(`<h2>${action === "stop" ? "STOP" : "START"} WORK · ${c.name.toUpperCase()}</h2><p>${what}</p><div class="btns"><button class="go">${action === "stop" ? "STOP WORK" : "START WORK"}</button><button class="dim no">CANCEL</button></div><p class="err" style="color:#ff9a8a"></p>`, { width: 460, closeOnOutside: false });
     p.el.querySelector(".no").onclick = () => p.close();
-    p.el.querySelector(".go").onclick = async () => {
+    const armedAt = performance.now() + 800; // ignore clicks that land right as the panel opens
+    p.el.querySelector(".go").onclick = async (ev) => {
+      if (!ev.isTrusted || performance.now() < armedAt) return; // only a deliberate, real click stops or starts work
       try {
         const r = await act("projectWork", { companyId: c.id, action });
         readout(action === "stop" ? `■ Work stopped · ${c.name}` : `▶ Work started · ${c.name}`, "0");
