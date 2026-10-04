@@ -83,8 +83,14 @@ function noiseHit(dur, from, to, gain = 0.2, at = 0, type = "bandpass") {
 
 // Named sounds. Rate-limited per name.
 const LIMIT = { ping: 1500, alarm: 4000, laser: 90, explosion: 600, whirr: 1500, rumble: 1500, chime: 1200, press: 0, door: 0, enter: 0, warn: 3000, click: 60 };
+// Beeps wait until the board itself is on screen ("enter" fires after the intro), and only
+// "needs you" (alarm/warn) and emergencies (klaxon) beep at all.
+let uiReady = false, pendingKlaxon = false;
+const QUIET = new Set(["ping", "chime", "click", "press"]);
 export function play(name) {
+  if (name === "enter") { uiReady = true; if (pendingKlaxon) { pendingKlaxon = false; klaxon(true); } }
   if (!ctx || state.muted) return;
+  if (!uiReady || QUIET.has(name)) return;
   const now = performance.now();
   if (now - (last.get(name) ?? -1e9) < (LIMIT[name] ?? 500)) return;
   last.set(name, now);
@@ -96,7 +102,7 @@ export function play(name) {
       noiseHit(0.25, 150, 90, 0.25, 4.6, "lowpass");
       setTimeout(() => ambienceIn(4), 5000);
       break;
-    case "enter": ambienceIn(2); blip(520, 0.2, 0.08); blip(780, 0.3, 0.06, "sine", sfx, 0.08); break;
+    case "enter": ambienceIn(2); break; // hum only, no beep
     case "ping": blip(1046, 0.7, 0.045, "triangle"); blip(1568, 0.6, 0.02, "sine", sfx, 0.02); blip(1046, 0.5, 0.015, "sine", sfx, 0.28); break; // warm two-partial ping with a faint echo
     case "alarm": // question arrival: a quiet sonar ping with a soft echo
       blip(1150, 0.9, 0.06, "sine"); blip(1150, 0.7, 0.025, "sine", sfx, 0.32); blip(1150, 0.5, 0.01, "sine", sfx, 0.64); break;
@@ -113,6 +119,7 @@ export function play(name) {
 // Critical alert: a soft, low "bridge alert" (rounded tone gliding 440 → 660 Hz, gentle envelope,
 // a short feedback-delay reverb, lowpass at 2.5 kHz). Every ~8 s, ~3 dB quieter each time, 6 repeats.
 export function klaxon(on) {
+  if (!uiReady) { pendingKlaxon = on; return; }
   if (!ctx) return;
   if (on && !klaxonTimer) {
     let n = 0;
