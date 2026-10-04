@@ -1,0 +1,16 @@
+# Private data the Orbit helper writes next to itself. Never publish these.
+token.txt
+origins.json
+config.json
+state.json
+log.jsonl
+eta.json
+alerts.json
+*.log
+*.tmp
+.env*
+*.pem
+*.key
+node_modules/
+.DS_Store
+qa-*/

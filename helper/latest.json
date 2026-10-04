@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "files": {
+    "server.mjs": "bd34c9171c9ce056551d711b7bcceee7ed4f4fe5febdaef54bdb1161e856aada",
+    "chat.mjs": "1694d7c13c677c98cc8e779c800f18aea34ecff9483ee5d7f06d0f9370f2287d",
+    "helper.mjs": "cd39cc0e34017e3d0739c2237fef5af031375cc44b2e6a477e0ec7bcbcc472fc",
+    "access.mjs": "be3f132ba8b25ca55499de9a01fdf38c9bf4eb13a7b7b746cb9d151319925efc",
+    "controls.mjs": "57dd4993187117943e12eb3cabe61bd5892110c0d828ec40cda30990db4db39b",
+    "service.mjs": "e20ee48281083dc614f7342de4be3fa211111bcd20897821b9bfc8c22ee56dd0",
+    "setup.mjs": "bee569152609c71074c4c1b6bfe2b217dfdd2bfce527b21ec6d719766323a81d",
+    "version.mjs": "2920dfbb81e0602a0f50c9f7bd8b77f7e1910b41b21eb29baf982733b0ac0bd8"
+  },
+  "downloads": {
+    "Orbit-mac.zip": "5f36a343f46cf5d2a4cb9c43095ece29e6aec8fae4e11442ab6cee21b0b18227",
+    "Orbit-windows.zip": "d4b141d94b848aa26eabec05e7027db02bf82ce92fddfc84a45a1042d77dd51a",
+    "Orbit-linux.tar.gz": "9e80db1dab52998856c0f40ceb7e92d731a29a35a6e838845fab396699c04284"
+  }
+}

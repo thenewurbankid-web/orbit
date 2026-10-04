@@ -182,17 +182,24 @@ export function openHelp() {
       <p><b>Estimates:</b> tap "estimate" on a satellite for a fresh rough guess.</p>
       <p><b>Sound and alerts:</b> the bottom strip has sound on/off and volume. Critical alerts sound a klaxon until you acknowledge them.</p>
       <p><b>Activity:</b> the tab on the right edge slides in a feed of everything that happened.</p>`,
-    "Setup": `<p><b>Paperclip</b> must run on this Mac at <code>localhost:3100</code>.</p>
-      <p><b>The board</b> runs as a Mac service at <code>127.0.0.1:4320</code> (install or remove it with <code>install.sh</code> / <code>uninstall.sh</code> in the status-board folder).</p>
+    "Connect this computer": `<p>Orbit shows the AI companies you run in <b>Paperclip</b> on your computer (Mac, Windows or Linux). To see yours on this website:</p>
+      <p><b>1.</b> Paperclip runs on the computer. If you don't have it yet, get it from <a href="https://paperclip.ing" target="_blank" rel="noopener" style="color:#bfe9ff">paperclip.ing</a>.</p>
+      <p><b>2.</b> Download Orbit for your computer and double-click <b>Start Orbit</b> in it. It sets itself up in your user folder (no admin) and starts by itself at every login. It uses the Node.js that Paperclip already needs.</p>
+      <p><b>3.</b> Back on this page, press <b>Connect to this computer</b>, then <b>Allow</b> in the Orbit window. This browser remembers it.</p>
+      <p>Chrome, Edge and Firefox connect from the website (they may ask to let it use devices on your network: choose Allow). Safari can't: open <code>http://127.0.0.1:4320</code> on the computer instead, it's the same board.</p>
+      <p>Restart, updates, logs and uninstall are in the control centre under <b>This computer</b>.</p>
+      ${window.orbitConnect ? `<div class="btns" style="justify-content:flex-start"><button class="oc-open">SET UP OR CHECK</button></div>` : ""}`,
+    "Setup": `<p><b>Paperclip</b> must run on this computer at <code>localhost:3100</code>.</p>
+      <p><b>The board</b> runs as a small service at <code>127.0.0.1:4320</code> (see "Connect this computer" to add or remove it).</p>
       <p><b>Projects:</b> use "+ project" to connect another Paperclip company, or a second Paperclip by URL. Long-press a planet to disconnect it.</p>
       <p><b>Phone:</b> tap "pair phone" and scan the QR code, then paste the phone's reply code back here. On the same Wi-Fi you can also open the link with the access key printed by the service.</p>
-      <p><b>Estimates</b> use Ollama on this Mac (<code>qwen2.5-coder:7b</code>).</p>
-      <p><b>Settings</b> live in <code>config.json</code> in the status-board folder (poll interval, projects, alert thresholds, notifications).</p>`,
+      <p><b>Estimates</b> use Ollama on this computer (<code>qwen2.5-coder:7b</code>).</p>
+      <p><b>Settings</b> live in <code>config.json</code> in the Orbit folder (poll interval, projects, alert thresholds, notifications).</p>`,
   };
   const keys = Object.keys(sections);
   const p = frostPanel(`<h2>HELP</h2><div class="tabs">${keys.map((k, i) => `<button class="dim ${i ? "" : "sel"}" data-k="${k}">${k.toUpperCase()}</button>`).join("")}</div><div class="scroll"></div><div class="btns"><button class="dim close">CLOSE</button></div>`, { width: 560 });
   const body = p.el.querySelector(".scroll");
-  const show = (k) => { body.innerHTML = sections[k]; p.el.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("sel", b.dataset.k === k)); };
+  const show = (k) => { body.innerHTML = sections[k]; p.el.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("sel", b.dataset.k === k)); body.querySelector(".oc-open")?.addEventListener("click", () => { p.close(); window.orbitConnect?.openConnect(); }); };
   p.el.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => show(b.dataset.k)));
   p.el.querySelector(".close").onclick = () => p.close();
   show(keys[0]);

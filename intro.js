@@ -157,12 +157,12 @@ export function runIntro(opts) {
   async function check() {
     if (opts.mode === "phone") return phoneStatus();
     const p = selPanel();
-    p.el.innerHTML = `<h2>SCANNING FOR PROJECTS…</h2><p>Checking the board on this Mac.</p>`;
+    p.el.innerHTML = `<h2>SCANNING FOR PROJECTS…</h2><p>Checking the board on this computer.</p>`;
     const r = await opts.check();
     const projects = r.projects ?? [];
     if (!projects.length) {
       p.el.innerHTML = `<h2>CONNECT A PROJECT</h2><p>${esc(r.reason || "No projects are connected yet.")}</p>
-        <p>Start Paperclip so it runs on <code>localhost:3100</code> (or set <code>"paperclipUrl"</code> in <code>config.json</code>), then connect one of its companies.</p><div class="btns"></div>`;
+        <p>Make sure Paperclip is running on this computer and has at least one company, then press RETRY.</p><div class="btns"></div>`;
       const btns = p.el.querySelector(".btns");
       const mk = (label, fn, dim) => { const b = document.createElement("button"); b.textContent = label; if (dim) b.className = "dim"; b.onclick = fn; btns.appendChild(b); };
       mk("+ CONNECT A PROJECT", () => opts.connect?.(() => check()));
@@ -178,6 +178,7 @@ export function runIntro(opts) {
       onStart: (pick) => { opts.saveSelection?.(pick); if (pick.demo) choose("demo"); else { opts.select?.(pick.ids); choose("enter"); } },
     });
   }
+  let setupCtl = null;
   function phoneStatus() {
     const l = opts.linkView();
     const p = selPanel();
@@ -185,13 +186,19 @@ export function runIntro(opts) {
       p.el.innerHTML = html + `<div class="btns"></div>`;
       for (const [label, fn, dim] of buttons) { const b = document.createElement("button"); b.textContent = label; if (dim) b.className = "dim"; b.onclick = fn; p.el.querySelector(".btns").appendChild(b); }
     };
-    if (!l.offer) simple(`<h2>NO PROJECTS CONNECTED</h2><p>This page shows a board from your Mac. On the Mac, open the board, tap <b>pair phone</b> and scan the QR code with this phone.</p>`, [["DEMO", () => choose("demo")], ["?", () => opts.help?.(), true]]);
+    if (!l.offer && opts.macSetup) {
+      // Website on a computer: guided "Connect this computer" (connect.js). On success the mode turns "mac".
+      if (setupCtl) return;
+      setupCtl = opts.macSetup(p.el, { done: () => { setupCtl = null; check(); }, demo: () => choose("demo"), help: () => opts.help?.() });
+      return;
+    }
+    if (!l.offer) simple(`<h2>NO PROJECTS CONNECTED</h2><p>This page shows a board from your computer. On the computer, open this page, connect it, then tap <b>pair phone</b> and scan the QR code with this phone.</p>`, [["DEMO", () => choose("demo")], ["?", () => opts.help?.(), true]]);
     else if (l.state === "connected") {
       const projects = opts.phoneProjects().projects;
       renderSelection(p.el, { title: `LINKED · ${projects.length} PROJECTS`, projects, preselected: opts.lastSelection?.(), demoSelected: false, canConnect: true,
         onConnect: (done) => opts.connect?.(done), onHelp: () => opts.help?.(),
         onStart: (pick) => { opts.saveSelection?.(pick); if (pick.demo) choose("demo"); else { opts.select?.(pick.ids); choose("enter"); } } });
-    } else if (l.answer) simple(`<h2>PAIRING WITH YOUR MAC</h2><p>Copy this code and paste it into the board on your Mac.</p><div class="code" style="max-height:90px;overflow-y:auto;font-size:10.5px;border:1px solid rgba(255,255,255,.1);padding:6px;word-break:break-all">${esc(l.answer)}</div>${l.state === "connecting" ? "<p>Connecting…</p>" : ""}`, [["COPY CODE", async () => { await opts.copy(l.answer); }], ["DEMO", () => choose("demo"), true]]);
+    } else if (l.answer) simple(`<h2>PAIRING WITH YOUR COMPUTER</h2><p>Copy this code and paste it into the board on your computer.</p><div class="code" style="max-height:90px;overflow-y:auto;font-size:10.5px;border:1px solid rgba(255,255,255,.1);padding:6px;word-break:break-all">${esc(l.answer)}</div>${l.state === "connecting" ? "<p>Connecting…</p>" : ""}`, [["COPY CODE", async () => { await opts.copy(l.answer); }], ["DEMO", () => choose("demo"), true]]);
     else if (l.error) simple(`<h2>PAIRING FAILED</h2><p>${esc(l.error)}</p>`, [["DEMO", () => choose("demo")]]);
     else simple(`<h2>PREPARING THE LINK…</h2>`, []);
   }
@@ -270,7 +277,7 @@ export function runIntro(opts) {
           <article><img src="assets/help/planet.jpg" alt="A planet with its agent moons and issue satellites"><div><h3>Agents are moons, issues are satellites</h3><p>Tap a planet to fly in. Its agents orbit as moons, and each issue is a satellite with a thin arc showing its rough % done.</p></div></article>
           <article><img src="assets/help/chat.jpg" alt="The chat panel next to an agent"><div><h3>Talk to an agent</h3><p>Tap a moon to see what that agent is doing and send it a message. It arrives as a comment on its issue.</p></div></article>
           <article class="text"><div><h3>Events</h3><p>UFO: an agent starts work · Meteor: an issue is done · Comet: a new issue · Hostile ship: a question waits for you (your answer flies out as a fighter) · Storm: blocked · Ice: no update for 2 h · Red alert: something critical.</p></div></article>
-          <article class="text"><div><h3>Setup</h3><p>Paperclip runs on this Mac at localhost:3100. Orbit runs as a Mac service at 127.0.0.1:4320. Use “+ project” to add projects, “pair phone” to follow on your phone, and Ollama on this Mac gives the rough estimates.</p></div></article>
+          <article class="text"><div><h3>Setup</h3><p>Paperclip runs on this computer at localhost:3100. Orbit runs as a small service at 127.0.0.1:4320. Use “+ project” to add projects, “pair phone” to follow on your phone, and Ollama on this computer gives the rough estimates.</p></div></article>
         </div>
         <div class="orbit-help-start"><button class="primary" data-a="start2">START</button></div>
       </div>
@@ -384,6 +391,7 @@ export function runIntro(opts) {
     panel.classList.remove("on");
     dissolve(sel);
     if (title) { dissolve(title); title = null; }
+    setupCtl?.stop?.(); setupCtl = null;
     if (chosen === "demo") opts.onDemo();
     canvas.style.transition = ""; canvas.style.opacity = "1"; // start drawing our scene under the video well before the cut
     goToCut();

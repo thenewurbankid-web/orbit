@@ -5,6 +5,7 @@
 //            data channel from the host page. Nothing secret is stored here; no server calls.
 
 import { host } from "./host.js";
+import * as connect from "./connect.js";
 
 const STUN = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
 const CHUNK = 15000;
@@ -69,8 +70,12 @@ try {
   key = localStorage.getItem("boardKey") || "";
 } catch { key = new URLSearchParams(location.search).get("key") || ""; }
 
+// On the Orbit website, after "Connect to this computer": the service's address and this site's token.
+// On the page the Mac serves itself both stay empty (same origin, no token needed).
+let apiBase = "", apiToken = "";
 async function http(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", "x-board-key": key, ...(opts.headers || {}) } });
+  const auth = apiToken ? { "x-orbit-token": apiToken } : key ? { "x-board-key": key } : {};
+  const res = await fetch(apiBase + path, { ...opts, headers: { "content-type": "application/json", ...auth, ...(opts.headers || {}) } });
   const text = await res.text();
   let body; try { body = JSON.parse(text); } catch { body = text; }
   if (!res.ok) throw new Error(typeof body === "string" ? body : body.error || String(res.status));
@@ -88,7 +93,8 @@ async function hostLoad() {
 let hostEs = null;
 function hostStream() {
   // EventSource cannot send headers, so the key rides in the query string here (LAN only).
-  const es = hostEs = new EventSource("api/chat/stream" + (key ? `?key=${encodeURIComponent(key)}` : ""));
+  const q = apiToken ? `?ot=${encodeURIComponent(apiToken)}` : key ? `?key=${encodeURIComponent(key)}` : "";
+  const es = hostEs = new EventSource(apiBase + "api/chat/stream" + q);
   es.onmessage = (ev) => {
     let e; try { e = JSON.parse(ev.data); } catch { return; }
     if (e.type === "msg") upsertMsg(e.msg);
@@ -272,7 +278,7 @@ async function startRemote(offerCode) {
     pc.ondatachannel = (ev) => {
       remoteDc = ev.channel;
       remoteDc.onopen = () => setLink({ state: "connected" });
-      remoteDc.onclose = () => setLink({ state: "closed", error: "The Mac closed the link. Pair again from the board on your Mac." });
+      remoteDc.onclose = () => setLink({ state: "closed", error: "The computer closed the link. Pair again from the board on your computer." });
       remoteDc.onmessage = (e) => unframe(e.data, onHostMessage);
     };
     pc.onconnectionstatechange = () => {
@@ -284,7 +290,7 @@ async function startRemote(offerCode) {
     await iceDone(pc);
     setLink({ state: "answer", answer: await pack(pc.localDescription) });
   } catch (e) {
-    setLink({ state: "failed", error: "This pairing link did not work (" + e.message + "). Make a new one on your Mac." });
+    setLink({ state: "failed", error: "This pairing link did not work (" + e.message + "). Make a new one on your computer." });
   }
 }
 
@@ -305,12 +311,12 @@ function onHostMessage(m) {
 }
 
 function remoteRequest(action, payload) {
-  if (remoteDc?.readyState !== "open") return Promise.reject(new Error("Not connected to the Mac"));
+  if (remoteDc?.readyState !== "open") return Promise.reject(new Error("Not connected to the computer"));
   const id = Math.random().toString(36).slice(2);
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     sendFramed(remoteDc, { type: "req", id, action, payload });
-    setTimeout(() => { if (pending.delete(id)) reject(new Error("No reply from the Mac")); }, action.startsWith("helper") ? 180000 : 30000);
+    setTimeout(() => { if (pending.delete(id)) reject(new Error("No reply from the computer")); }, action.startsWith("helper") ? 180000 : 30000);
   });
 }
 
@@ -466,9 +472,9 @@ function renderList() {
 
 function remoteLinkHtml() {
   const l = store.link;
-  if (l.state === "answer" || l.state === "connecting") return `<section><h2>Pair with your Mac</h2><p>Paste this into the board on your Mac.</p><div class="code" id="ans">${esc(l.answer)}</div><div class="row"><button data-l="copy">Copy</button><span class="muted small">${l.state === "connecting" ? "Connecting…" : ""}</span></div></section>`;
+  if (l.state === "answer" || l.state === "connecting") return `<section><h2>Pair with your computer</h2><p>Paste this into the board on your computer.</p><div class="code" id="ans">${esc(l.answer)}</div><div class="row"><button data-l="copy">Copy</button><span class="muted small">${l.state === "connecting" ? "Connecting…" : ""}</span></div></section>`;
   if (l.error) return `<section><p class="err">${esc(l.error)}</p></section>`;
-  return `<section><p class="muted">${l.state === "making" ? "Preparing the link…" : "Open this page from the QR code on your Mac's board."}</p></section>`;
+  return `<section><p class="muted">${l.state === "making" ? "Preparing the link…" : "Open this page from the QR code on your computer's board."}</p></section>`;
 }
 
 function pairHtml() {
@@ -543,7 +549,7 @@ document.addEventListener("click", async (ev) => {
     if (l === "pair") { await startPairing(); return renderList(); }
     if (l === "unpair") { stopPairing(); return renderList(); }
     if (l === "apply") { await applyAnswer($("lanswer").value); return renderList(); }
-    if (l === "copy") { await copyText(store.link.answer); return note("Copied. Paste it into the board on your Mac."); }
+    if (l === "copy") { await copyText(store.link.answer); return note("Copied. Paste it into the board on your computer."); }
     if (l === "eta") { await act("eta", { issue: b.dataset.i }); return note(`Estimating ${b.dataset.i}…`); }
     if (l === "etaAll") { await act("eta", { company: b.dataset.c }); return note(`Estimating ${b.dataset.c}…`); }
     if (l === "chatSend") {
@@ -657,12 +663,31 @@ export async function openHelpPanel() { (await import("./ui.js")).openHelp(); }
 function lastSelection() { try { const v = localStorage.getItem("lastSelection"); return v === "demo" ? "demo" : v ? JSON.parse(v) : null; } catch { return null; } }
 function saveSelection(pick) { try { localStorage.setItem("lastSelection", pick.demo ? "demo" : JSON.stringify(pick.ids)); } catch {} }
 
+// The website connected to Orbit on this computer (see connect.js): from now on it works like the Mac's own page.
+async function connectMac({ base, token }) {
+  const prev = [apiBase, apiToken];
+  apiBase = base; apiToken = token;
+  try {
+    const b = await http("api/board");
+    try { hostEs?.close(); } catch {}
+    store.mode = "host"; store.viaSite = true;
+    setBoard(b);
+    setChat(await http("api/chat"));
+    setLog(await http("api/log?limit=500"));
+    hostStream();
+    store.emit("mode", "host");
+    return true;
+  } catch (e) { [apiBase, apiToken] = prev; return false; }
+}
+connect.initConnect({ connectMac, mode: () => store.mode, sameOrigin: () => store.mode === "host" && !apiBase, http });
+
 async function boot() {
   const offer = new URLSearchParams(location.hash.slice(1)).get("o");
   if (offer) startRemote(offer);
   else {
     try {
       const b = await http("api/board");
+      if (!b || typeof b !== "object" || !Array.isArray(b.companies)) throw new Error("not the Orbit service");
       store.mode = "host";
       setBoard(b);
       setChat(await http("api/chat"));
@@ -671,6 +696,8 @@ async function boot() {
     } catch (e) {
       store.mode = "lost";
       setLink({ state: "idle", error: /Access key/.test(e.message) ? e.message : "" });
+      // The website: if this browser was connected to Orbit on this computer before, carry on quietly.
+      try { await connect.resume(); } catch {}
     }
   }
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -679,7 +706,9 @@ async function boot() {
     const intro = await import("./intro.js");
     if (!intro.shouldSkipIntro()) {
       intro.runIntro({
-        mode: store.mode === "host" ? "mac" : "phone", canvas: $("sky"), reduced,
+        get mode() { return store.mode === "host" ? "mac" : "phone"; }, canvas: $("sky"), reduced,
+        // The website on a computer with no computer connected yet: the guided "Connect this computer" steps.
+        macSetup: offer || connect.isPhone() ? null : (el, h) => connect.renderSetup(el, { onConnected: h.done, onDemo: h.demo, onHelp: h.help }),
         videoSrc: "assets/intro.mp4" + (key && store.mode === "host" ? `?key=${encodeURIComponent(key)}` : ""),
         check: async () => { await new Promise((r) => setTimeout(r, 700)); return projectCheck(); },
         onRetry: retryConnect,

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Start Orbit
+Comment=Set up Orbit on this computer and open the Orbit page
+Exec=sh -c 'cd "$(dirname "%k")" && ./start-orbit.sh; echo; echo Press Return to close; read x'
+Terminal=true
+Icon=applications-internet
+Categories=Utility;
