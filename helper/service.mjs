@@ -28,7 +28,7 @@ export const appDir = () => join(baseDir(), "app");
 export const logFile = () => join(baseDir(), "orbit.log");
 
 // The files that make up the helper (copied on install and update).
-export const HELPER_FILES = ["server.mjs", "chat.mjs", "helper.mjs", "access.mjs", "controls.mjs", "service.mjs", "setup.mjs", "version.mjs"];
+export const HELPER_FILES = ["server.mjs", "chat.mjs", "helper.mjs", "access.mjs", "controls.mjs", "clipboard.mjs", "service.mjs", "setup.mjs", "version.mjs"];
 
 function sh(cmd, args) {
   if (process.env.ORBIT_FAKE_CMDS) {

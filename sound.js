@@ -1,30 +1,65 @@
-// Ship sound, synthesised with the Web Audio API (no audio files). Starts on the first user gesture
-// (the door button). Ambience: engine hum, air recycler, occasional console chirps. Events and alarms
-// are short and rate-limited. Mute and volume are remembered in localStorage.
+// Ship sound, synthesised with the Web Audio API (no audio files), designed to be cinematic and restrained:
+// sine and filtered-noise sources only (no square or saw waves, no pitch-slide "bloops", no arpeggios), soft
+// attacks, exponential releases, a low-pass on everything and a short generated room reverb for alerts.
+// A small mixer: master → ambience / UI / alerts / notifications, each with a level and a mute, remembered in
+// localStorage. Lasers and explosions are silent (vacuum). Our sounds wait until the board is on screen.
 
 import { host, onHostChange } from "./host.js";
 
-let ctx = null, master = null, amb = null, sfx = null, klaxonTimer = null;
+let ctx = null, master = null, verb = null, klaxonTimer = null;
+const bus = {};                       // channel gain nodes
 const last = new Map();
-const state = { muted: false, volume: 0.6 };
-try { state.muted = localStorage.getItem("soundMuted") === "1"; const v = Number(localStorage.getItem("soundVolume")); if (v > 0) state.volume = v; } catch {}
+const state = { muted: false, volume: 0.6, alerts: true };
+const CHANNELS = ["ambience", "ui", "alerts", "notify", "intro"];
+const mix = Object.fromEntries(CHANNELS.map((c) => [c, { vol: c === "ambience" ? 0.8 : 1, muted: false }]));
+try {
+  state.muted = localStorage.getItem("soundMuted") === "1"; const v = Number(localStorage.getItem("soundVolume")); if (v > 0) state.volume = v;
+  const m = JSON.parse(localStorage.getItem("orbitMixer") || "null"); if (m) for (const c of CHANNELS) if (m[c]) Object.assign(mix[c], m[c]);
+  if (localStorage.getItem("soundAlerts") === "0") state.alerts = false;
+} catch {}
 
 const db = (d) => Math.pow(10, d / 20);
 const TRIM = 0.55; // overall level trim: everything ~5 dB quieter than the slider value
 
-export function soundState() { return { ...state, started: Boolean(ctx) }; }
+export function soundState() { return { ...state, started: Boolean(ctx), mix: JSON.parse(JSON.stringify(mix)) }; }
+export const channels = CHANNELS;
+// Effective gain of a channel (0..1), e.g. for the intro video's soundtrack.
+export function channelGain(c) { return state.muted || !mix[c] || mix[c].muted ? 0 : state.volume * mix[c].vol; }
 
 export function startAudio() {
   if (ctx) { ctx.resume?.(); return; }
   try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return; }
-  master = ctx.createGain(); master.gain.value = state.muted ? 0 : state.volume * TRIM; master.connect(ctx.destination);
-  amb = ctx.createGain(); amb.gain.value = 0; amb.connect(master);
-  sfx = ctx.createGain(); sfx.gain.value = 0.5; sfx.connect(master);
+  master = ctx.createGain(); master.gain.value = state.muted ? 0 : state.volume * TRIM;
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 6000; lp.Q.value = 0.5; // nothing harsh gets out
+  master.connect(lp).connect(ctx.destination);
+  for (const c of CHANNELS) { bus[c] = ctx.createGain(); bus[c].gain.value = chanLevel(c); bus[c].connect(master); }
+  bus.ambBed = ctx.createGain(); bus.ambBed.gain.value = 0; bus.ambBed.connect(bus.ambience);
+  verb = makeReverb(2.6); verb.out.connect(bus.alerts);
   buildAmbience();
   // A hidden tab ducks the ambience, unless Orbit is floating (then it is still on screen).
   const reduck = () => duck(document.hidden && !host.mode);
   document.addEventListener("visibilitychange", reduck);
   onHostChange(reduck);
+}
+const chanLevel = (c) => (mix[c].muted ? 0 : mix[c].vol);
+function saveMix() { try { localStorage.setItem("orbitMixer", JSON.stringify(mix)); } catch {} }
+export function setChannel(c, { vol, muted } = {}) {
+  if (!mix[c]) return;
+  if (vol != null) mix[c].vol = Math.max(0, Math.min(1, vol));
+  if (muted != null) mix[c].muted = !!muted;
+  saveMix();
+  if (ctx && bus[c]) bus[c].gain.setTargetAtTime(chanLevel(c), ctx.currentTime, 0.08);
+}
+export function setAlertsEnabled(on) { state.alerts = !!on; try { localStorage.setItem("soundAlerts", on ? "1" : "0"); } catch {} if (!on) klaxon(false); }
+
+// A small generated room: decaying, low-passed stereo noise as the impulse response.
+function makeReverb(secs) {
+  const n = Math.floor(ctx.sampleRate * secs), ir = ctx.createBuffer(2, n, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); let lp = 0; for (let i = 0; i < n; i++) { lp += ((Math.random() * 2 - 1) - lp) * 0.22; d[i] = lp * Math.pow(1 - i / n, 3.2); } }
+  const conv = ctx.createConvolver(); conv.buffer = ir;
+  const inp = ctx.createGain(), out = ctx.createGain(); out.gain.value = 0.55;
+  inp.connect(conv).connect(out);
+  return { in: inp, out };
 }
 
 function noiseBuffer(kind = "brown", secs = 4) {
@@ -37,45 +72,57 @@ function noiseBuffer(kind = "brown", secs = 4) {
   return b;
 }
 
+// Ship ambience: a deep, filtered noise bed with a slow random drift of its colour (no LFO wobble), and a very
+// low, steady sine for weight. No chirps.
 function buildAmbience() {
-  // Engine hum: two detuned oscillators through a lowpass, slow LFO wobble.
-  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 160; lp.Q.value = 0.7;
-  const hum = ctx.createGain(); hum.gain.value = db(-35);
-  for (const [type, f] of [["sine", 46], ["sawtooth", 46.7], ["sine", 92.3]]) {
-    const o = ctx.createOscillator(); o.type = type; o.frequency.value = f;
-    const g = ctx.createGain(); g.gain.value = type === "sawtooth" ? 0.25 : f > 80 ? 0.2 : 0.8;
-    o.connect(g).connect(lp); o.start();
-  }
-  const lfo = ctx.createOscillator(); lfo.frequency.value = 0.13; const lfoG = ctx.createGain(); lfoG.gain.value = 25;
-  lfo.connect(lfoG).connect(lp.frequency); lfo.start();
-  lp.connect(hum).connect(amb);
-  // Air recycler: filtered brown noise.
-  const n = ctx.createBufferSource(); n.buffer = noiseBuffer("brown", 6); n.loop = true;
-  const bp = ctx.createBiquadFilter(); bp.type = "lowpass"; bp.frequency.value = 700;
-  const ng = ctx.createGain(); ng.gain.value = db(-34);
-  n.connect(bp).connect(ng).connect(amb); n.start();
-  // Console chirps every 10-30 s.
-  const chirp = () => { if (ctx && !document.hidden) blip(1800 + Math.random() * 900, 0.04, db(-38), "sine", amb); setTimeout(chirp, 10000 + Math.random() * 20000); };
-  setTimeout(chirp, 8000);
+  const n = ctx.createBufferSource(); n.buffer = noiseBuffer("brown", 8); n.loop = true;
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 220; lp.Q.value = 0.4;
+  const bed = ctx.createGain(); bed.gain.value = db(-26);
+  n.connect(lp).connect(bed).connect(bus.ambBed); n.start();
+  const o = ctx.createOscillator(); o.type = "sine"; o.frequency.value = 43;
+  const og = ctx.createGain(); og.gain.value = db(-40);
+  const olp = ctx.createBiquadFilter(); olp.type = "lowpass"; olp.frequency.value = 120;
+  o.connect(olp).connect(og).connect(bus.ambBed); o.start();
+  const drift = () => { if (!ctx) return; lp.frequency.setTargetAtTime(180 + Math.random() * 90, ctx.currentTime, 6); bed.gain.setTargetAtTime(db(-27 + Math.random() * 2), ctx.currentTime, 8); setTimeout(drift, 9000 + Math.random() * 9000); };
+  drift();
 }
 
 export function ambienceIn(seconds = 3) {
   if (!ctx) return;
-  amb.gain.cancelScheduledValues(ctx.currentTime);
-  amb.gain.setTargetAtTime(db(-24) / db(-30) * 0.9, ctx.currentTime, seconds / 3);
+  bus.ambBed.gain.cancelScheduledValues(ctx.currentTime);
+  bus.ambBed.gain.setTargetAtTime(0.9, ctx.currentTime, seconds / 3);
 }
-function duck(hidden) { if (ctx) amb.gain.setTargetAtTime(hidden ? 0.15 : 0.9, ctx.currentTime, 0.4); }
+function duck(hidden) { if (ctx) bus.ambBed.gain.setTargetAtTime(hidden ? 0.15 : 0.9, ctx.currentTime, 0.4); }
 
 export function setMuted(m) { state.muted = m; try { localStorage.setItem("soundMuted", m ? "1" : "0"); } catch {} if (master) master.gain.setTargetAtTime(m ? 0 : state.volume * TRIM, ctx.currentTime, 0.05); }
 export function setVolume(v) { state.volume = v; try { localStorage.setItem("soundVolume", String(v)); } catch {} if (master && !state.muted) master.gain.setTargetAtTime(v * TRIM, ctx.currentTime, 0.05); }
 
-function blip(freq, dur, gain = 0.15, type = "sine", out = sfx, at = 0) {
+// A soft sine note: attack, then exponential release; optional send to the reverb.
+function tone(freq, { dur = 1.2, gain = 0.05, attack = 0.04, out = bus.ui, at = 0, wet = 0, cutoff = 1800 } = {}) {
   const t = ctx.currentTime + at;
-  const o = ctx.createOscillator(), g = ctx.createGain();
-  o.type = type; o.frequency.setValueAtTime(freq, t);
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(out); o.start(t); o.stop(t + dur + 0.05);
-  return o;
+  const o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+  o.type = "sine"; o.frequency.setValueAtTime(freq, t);
+  f.type = "lowpass"; f.frequency.value = cutoff;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(f).connect(g).connect(out);
+  if (wet > 0) { const s = ctx.createGain(); s.gain.value = wet; g.connect(s).connect(verb.in); }
+  o.start(t); o.stop(t + dur + 0.05);
+}
+// A felt-like transient: a short burst of low-passed noise with a low sine body ("thock").
+function thock({ gain = 0.05, cutoff = 900, body = 170, out = bus.ui, at = 0 } = {}) {
+  const t = ctx.currentTime + at;
+  const n = ctx.createBufferSource(); n.buffer = noiseBuffer("white", 0.2);
+  const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cutoff; f.Q.value = 0.6;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  n.connect(f).connect(g).connect(out); n.start(t); n.stop(t + 0.1);
+  tone(body, { dur: 0.09, gain: gain * 0.7, attack: 0.003, out, at, cutoff: 600 });
+}
+function noiseSwell(dur, cutoff, gain, out, at = 0) {
+  const t = ctx.currentTime + at;
+  const n = ctx.createBufferSource(); n.buffer = noiseBuffer("brown", Math.max(1, dur + 0.2));
+  const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cutoff;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.4); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  n.connect(f).connect(g).connect(out); n.start(t); n.stop(t + dur + 0.1);
 }
 function noiseHit(dur, from, to, gain = 0.2, at = 0, type = "bandpass") {
   const t = ctx.currentTime + at;
@@ -83,65 +130,69 @@ function noiseHit(dur, from, to, gain = 0.2, at = 0, type = "bandpass") {
   const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = 1.2;
   f.frequency.setValueAtTime(from, t); f.frequency.exponentialRampToValueAtTime(to, t + dur);
   const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  n.connect(f).connect(g).connect(sfx); n.start(t); n.stop(t + dur + 0.1);
+  n.connect(f).connect(g).connect(bus.ui); n.start(t); n.stop(t + dur + 0.1);
+}
+// Alerts: a calm, low two-tone sonar with a soft attack and a long reverb tail; `urgent` is the same family,
+// a step higher and a touch firmer.
+function sonar(urgent = false, level = 1) {
+  const a = urgent ? 587 : 523, b = urgent ? 440 : 392;
+  tone(a, { dur: 1.6, gain: 0.05 * level, attack: 0.05, out: bus.alerts, wet: 0.6, cutoff: 1400 });
+  tone(b, { dur: 2.0, gain: 0.045 * level, attack: 0.06, out: bus.alerts, wet: 0.6, cutoff: 1200, at: urgent ? 0.28 : 0.36 });
 }
 
 // Named sounds. Rate-limited per name.
 const LIMIT = { ping: 1500, alarm: 4000, laser: 90, explosion: 600, whirr: 1500, rumble: 1500, chime: 1200, press: 0, door: 0, enter: 0, warn: 3000, click: 60 };
-// Beeps wait until the board itself is on screen ("enter" fires after the intro), and only
-// "needs you" (alarm/warn) and emergencies (klaxon) beep at all.
+// Sounds wait until the board itself is on screen ("enter" fires after the intro), and only "needs you"
+// (alarm/warn) and emergencies (klaxon) sound at all; the quiet set stays silent.
 let uiReady = false, pendingKlaxon = false;
 const QUIET = new Set(["ping", "chime", "click", "press"]);
 export function play(name) {
   if (name === "enter") { uiReady = true; if (pendingKlaxon) { pendingKlaxon = false; klaxon(true); } }
   if (!ctx || state.muted) return;
   if (!uiReady || QUIET.has(name)) return;
+  if ((name === "alarm" || name === "warn") && !state.alerts) return;
   const now = performance.now();
   if (now - (last.get(name) ?? -1e9) < (LIMIT[name] ?? 500)) return;
   last.set(name, now);
   switch (name) {
-    case "press": blip(660, 0.12, 0.06, "sine"); blip(990, 0.16, 0.04, "sine", sfx, 0.05); break;
-    case "door": // timed to the video: hiss as the door opens (~2 s), clunk, then the hum fades in
-      noiseHit(2.6, 300, 2400, 0.16, 1.9, "bandpass");
-      blip(70, 0.35, 0.35, "sine", sfx, 1.85); noiseHit(0.18, 200, 120, 0.3, 1.85, "lowpass");
-      noiseHit(0.25, 150, 90, 0.25, 4.6, "lowpass");
+    case "press": thock({ gain: 0.04 }); break;
+    case "click": thock({ gain: 0.03, cutoff: 1100, body: 190 }); break;
+    case "door": // timed to the video: a soft hiss as the door opens (~2 s), a low thud, then the bed fades in
+      noiseHit(2.6, 300, 1800, 0.12, 1.9, "bandpass");
+      tone(70, { dur: 0.4, gain: 0.3, attack: 0.01, at: 1.85, cutoff: 200 }); noiseHit(0.18, 200, 120, 0.25, 1.85, "lowpass");
+      noiseHit(0.25, 150, 90, 0.2, 4.6, "lowpass");
       setTimeout(() => ambienceIn(4), 5000);
       break;
-    case "enter": ambienceIn(2); break; // hum only, no beep
-    case "ping": blip(1046, 0.7, 0.045, "triangle"); blip(1568, 0.6, 0.02, "sine", sfx, 0.02); blip(1046, 0.5, 0.015, "sine", sfx, 0.28); break; // warm two-partial ping with a faint echo
-    case "alarm": // question arrival: a quiet sonar ping with a soft echo
-      blip(1150, 0.9, 0.06, "sine"); blip(1150, 0.7, 0.025, "sine", sfx, 0.32); blip(1150, 0.5, 0.01, "sine", sfx, 0.64); break;
-    case "laser": { const o = blip(1400, 0.12, 0.05, "sawtooth"); o.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.12); break; }
-    case "explosion": break; // silent: explosions happen outside the ship, in vacuum
-    case "whirr": { const o = blip(180, 1.2, 0.04, "sawtooth"); o.frequency.linearRampToValueAtTime(260, ctx.currentTime + 1.2); break; }
-    case "rumble": break; // silent: meteor impacts are outside the ship
-    case "chime": [1047, 1319, 1568].forEach((f, i) => blip(f, 0.9, 0.06, "sine", sfx, i * 0.09)); break;
-    case "warn": blip(1319, 1.2, 0.05, "sine"); blip(988, 1.4, 0.045, "sine", sfx, 0.2); break; // soft two-note chime
-    case "click": { const o = blip(1500, 0.07, 0.03, "sine"); o.frequency.exponentialRampToValueAtTime(950, ctx.currentTime + 0.07); break; } // soft, rounded tick
+    case "enter": ambienceIn(2); break; // the bed only
+    case "ping": tone(660, { dur: 0.9, gain: 0.03, out: bus.notify, wet: 0.3, cutoff: 1500 }); break;
+    case "alarm": sonar(false); break;           // a question arrives: calm, low, two-tone
+    case "warn": sonar(false, 0.8); break;
+    case "laser": break;                          // silent (vacuum)
+    case "explosion": break;                      // silent (vacuum)
+    case "rumble": break;                         // silent
+    case "whirr": noiseSwell(1.1, 420, 0.03, bus.ui); break; // a craft leaves: a faint, low air swell
+    case "chime": tone(784, { dur: 1.4, gain: 0.03, out: bus.notify, wet: 0.4 }); tone(1047, { dur: 1.6, gain: 0.02, out: bus.notify, wet: 0.4, at: 0.12 }); break;
   }
 }
+// Preview a channel at its current level (settings panel).
+export function preview(c) {
+  startAudio(); if (!ctx) return;
+  if (c === "ui") thock({ gain: 0.05 });
+  else if (c === "alerts") sonar(false);
+  else if (c === "notify") tone(660, { dur: 0.9, gain: 0.04, out: bus.notify, wet: 0.3 });
+  else if (c === "ambience") { bus.ambBed.gain.setTargetAtTime(0.9, ctx.currentTime, 0.3); }
+}
 
-// Critical alert: a soft, low "bridge alert" (rounded tone gliding 440 → 660 Hz, gentle envelope,
-// a short feedback-delay reverb, lowpass at 2.5 kHz). Every ~8 s, ~3 dB quieter each time, 6 repeats.
+// Critical alert: the same sonar family, slightly more urgent, every ~8 s, ~3 dB quieter each time, 6 repeats.
 export function klaxon(on) {
   if (!uiReady) { pendingKlaxon = on; return; }
   if (!ctx) return;
+  if (on && !state.alerts) return;
   if (on && !klaxonTimer) {
     let n = 0;
-    const delay = ctx.createDelay(); delay.delayTime.value = 0.13;
-    const fb = ctx.createGain(); fb.gain.value = 0.32;
-    const wet = ctx.createGain(); wet.gain.value = 0.35;
-    delay.connect(fb).connect(delay); delay.connect(wet).connect(master);
     const sound = () => {
       if (n >= 6) { clearInterval(klaxonTimer); return; }
-      if (!state.muted) {
-        const t = ctx.currentTime, peak = db(-18) * Math.max(db(-12), Math.pow(db(-3), n));
-        const o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter();
-        o.type = "triangle"; o.frequency.setValueAtTime(440, t); o.frequency.exponentialRampToValueAtTime(660, t + 0.3);
-        lp.type = "lowpass"; lp.frequency.value = 2500;
-        g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + 0.03); g.gain.setValueAtTime(peak, t + 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
-        o.connect(lp).connect(g); g.connect(master); g.connect(delay); o.start(t); o.stop(t + 0.75);
-      }
+      if (!state.muted) sonar(true, Math.max(db(-12), Math.pow(db(-3), n)));
       n++;
     };
     sound(); klaxonTimer = setInterval(sound, 8000);

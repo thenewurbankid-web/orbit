@@ -51,8 +51,8 @@ export function makeHostile() {
   for (const s of [-1, 1]) {
     const fin = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.02, 0.12), darkHull); fin.position.set(s * 0.22, 0, -0.05); fin.rotation.y = s * 0.5; g.add(fin);
   }
-  const lights = [[-0.34, 0, -0.08], [0.34, 0, -0.08], [0, 0.06, 0.2]].map(([x, y, z]) => { const l = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), glow(0xd8b48c, 0.9)); l.position.set(x, y, z); g.add(l); return l; });
-  const engine = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), glow(0xcfae8a, 0.8)); engine.position.z = -0.27; g.add(engine);
+  const lights = [[-0.34, 0, -0.08], [0.34, 0, -0.08], [0, 0.06, 0.2]].map(([x, y, z]) => { const l = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), glow(0xffa040, 3.6)); l.position.set(x, y, z); g.add(l); return l; });
+  const engine = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), glow(0xff8a3a, 3.2)); engine.position.z = -0.27; g.add(engine);
   g.userData = { lights, engine, kind: "hostile" };
   return g;
 }

@@ -4,14 +4,24 @@ import { frameMetrics } from "./frame.js";
 import { frostPanel, renderSelection } from "./ui.js";
 
 const VW = 848, VH = 478;
-// The white point: a star flares in the window at ~7.2 s, just before the warp and planets (~7.5 s).
-// Its position per video second (measured on the frames; the camera tilts down a little as it grows).
-const POINT = [[7.05, 0.5, 0.283], [7.2, 0.5, 0.283], [7.3, 0.5, 0.333], [7.4, 0.505, 0.342], [7.5, 0.5, 0.383], [7.6, 0.5, 0.4]];
 const BUTTON = { x: 0.254, y: 0.663 };                 // door button at frame 0 (measured)
 // Cut frame: 12.0 s, the last frame where the whole window opening is in shot (the camera keeps
 // pushing in after it). Opening measured in video pixels on that frame.
 const CUT_T = 9.667; // freeze frame (frame 232 at 24 fps), picked by the owner in the Flash Tuner
 const WIN_PX = { x0: 80, y0: -2, x1: 765, y1: 333 }; // inner edge of the steel lip (pixel profiles at 12.0 s)
+// The window opening on the freeze frame (frame 232), tracked from the video and normalised to the video
+// frame (x / 848, y / 478). From 7.125 s on, the video's window is painted black (assets/intro.mp4), so at the
+// freeze our live scene shows through exactly this shape.
+const WINDOW_POLY = [[0.0920, 0.2281], [0.0943, 0.3557], [0.0955, 0.3766], [0.1002, 0.3933], [0.1097, 0.4351], [0.1156, 0.4519], [0.1120, 0.5836], [0.1085, 0.7029], [0.1592, 0.7949], [0.1674, 0.8033], [0.3927, 0.8033], [0.4103, 0.7844], [0.5896, 0.7844], [0.6061, 0.8033], [0.8337, 0.8033], [0.8407, 0.7970], [0.8867, 0.7175], [0.8926, 0.6150], [0.8879, 0.5815], [0.8915, 0.4205], [0.9032, 0.3849], [0.9068, 0.3598], [0.9091, 0.2280], [0.9068, 0.2197], [0.8525, 0.1214], [0.8478, 0.1172], [0.6108, 0.1172], [0.5943, 0.1360], [0.5872, 0.1402], [0.4115, 0.1402], [0.3938, 0.1214], [0.3879, 0.1172], [0.1545, 0.1172], [0.1450, 0.1256], [0.1191, 0.1737], [0.0967, 0.2134]];
+// The window transition (tunable; the Flash Tuner reads these):
+export const REVEAL_MS = 2200;      // black window → our scene, like eyes adjusting / the glass clearing
+export const STAR_CURVE = 0.7;      // < 1: stars emerge early in the reveal
+export const EXPOSE_CURVE = 2.2;    // > 1: nebula and planets come up late in the reveal
+export const PUSH_AT = 0.55;        // the push through the window starts at this fraction of the reveal
+export const PUSH_MS = 2100;        // push duration (v1-style ease-in-out cubic)
+export const PUSH_DEPTH = 1.18;     // how far past "the opening just covers the screen" the push goes
+export const PUSH_BLUR = 6;         // px of motion blur on the video at peak push speed
+export const FRAME_FADE_MS = 900;   // our SVG frame fades in over the end of the push
 const WINDOW_VISIBLE_AT = 3.5;                            // seconds
 const ZOOM_RATE = 0.04;                                 // the video's forward push, ~4 %/s around the cut
 
@@ -49,10 +59,6 @@ export function shouldSkipIntro() {
 //         onEnter(), onDemo(), onRetry(): Promise, copy(text), canvas, reduced, onLink(cb) }
 export function runIntro(opts) {
   const { canvas, reduced } = opts;
-  // The white-out flare is real imagery (assets/fx, see CREDITS.md): a Hubble star halo, a Webb star-burst and an
-  // anamorphic lens streak. Preloaded now so they are decoded by the cut; the drawn gradients remain the fallback.
-  const smallFx = Math.min(innerWidth, innerHeight) < 640;
-  const flareImgs = Object.fromEntries(["flare", "glint", "streak"].map((n) => { const im = new Image(); im.decoding = "async"; im.src = `assets/fx/${n}${smallFx ? "-sm" : ""}.jpg`; return [n, im]; }));
   const root = document.createElement("div");
   root.className = "intro";
   root.innerHTML = `
@@ -398,7 +404,10 @@ export function runIntro(opts) {
   }
   // Reach the cut frame: fast-forward smoothly if it is ahead, then cut.
   function goToCut() {
-    if (reduced) return transition();
+    if (reduced) { // no playback: jump to the freeze frame (window already black), then crossfade
+      if (Math.abs(video.currentTime - CUT_T) < 0.02) return transition();
+      video.addEventListener("seeked", () => transition(), { once: true }); video.currentTime = CUT_T; setTimeout(transition, 1500); return;
+    }
     if (stalled) {
       // Playback blocked by the host: seek straight to the cut frame.
       video.addEventListener("seeked", () => transition(), { once: true });
@@ -449,97 +458,95 @@ export function runIntro(opts) {
   // above the opaque scene and only its own opacity changes.
   const MOVE = 900, XF0 = 450, XF1 = 1050;
   let tr = null;
-  function fadeOutVideo() {
+  function fadeOutVideo(ms = 700) {
+    // The video is paused on its freeze frame, but its soundtrack may still be ringing out via the element's volume:
+    // ease the volume down (exponential-ish) over `ms`.
     const v0 = video.volume, t0 = performance.now();
-    const f = () => { const k = Math.min(1, (performance.now() - t0) / 700); video.volume = v0 * (1 - k); if (k < 1) setTimeout(f, 30); else video.pause(); };
-    if (video.muted || video.paused) video.pause(); else f();
+    const f = () => { const k = Math.min(1, (performance.now() - t0) / ms); video.volume = v0 * Math.pow(1 - k, 2); if (k < 1) setTimeout(f, 30); };
+    if (!video.muted) f();
   }
   function transition() {
     if (finished) return;
     finished = true;
-    // Freeze on the last dark frame before the video's flash and draw our own: a star lights up where the
-    // video's flare would be, the camera pans and pushes in so it glides to the centre, its light grows and
-    // whites the screen out, we hold a beat, swap to our scene underneath and let the light fade.
-    // Everything runs on our clock, so it is smooth even when the video stutters.
+    // The window is already black in the video at the freeze (frame 232). Our live scene appears through the
+    // opening (the video is clipped with a hole in the frame-232 window shape): first black, then the far stars,
+    // then the nebula and planets, like eyes adjusting. Then the camera pushes forward through the window: the
+    // video scales up from the window so the lip slides past the screen edges, blurring and fading as it goes,
+    // while our scene keeps flying in; our SVG frame fades in last. No flash. All on our clock.
     video.pause();
     const frame = opts.frame?.(), W = innerWidth, H = innerHeight;
     skip.style.display = "none";
     tr = { frame, W, H };
     canvas.style.transition = ""; canvas.style.opacity = "1";
-    const ZOOM = reduced ? 0 : 1600, HOLD = reduced ? 0 : 700, FALL = reduced ? 0 : 1600;
-    const layer = (z) => { const d = document.createElement("div"); Object.assign(d.style, { position: "fixed", inset: "0", zIndex: z, pointerEvents: "none" }); document.body.appendChild(d); return d; };
-    const star = layer(40), wash = layer(41);
-    wash.style.background = "#f4faff"; wash.style.opacity = "0";
     const m = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(video.style.transform || ""); // portrait pan offset, if any
     const bx = m ? +m[1] : 0, by = m ? +m[2] : 0;
-    video.style.transition = "none"; video.style.transformOrigin = "0 0";
-    const px = POINT[0][1], py = POINT[0][2], D = Math.hypot(W, H);
-    const sx0 = rect.left + bx + px * rect.w, sy0 = rect.top + by + py * rect.h; // the star on screen before the move
-    let t0 = 0;
-    // Real flare layers, screen-blended over the frozen frame (black in the photos adds nothing).
-    const real = !reduced && Object.values(flareImgs).every((im) => im.complete && im.naturalWidth > 0);
-    let parts = null;
-    if (real) {
-      star.style.mixBlendMode = "screen";
-      const part = (n, extra = {}) => { const im = flareImgs[n].cloneNode(); Object.assign(im.style, { position: "absolute", left: "0", top: "0", width: "1px", height: "1px", mixBlendMode: "screen", transformOrigin: "50% 50%", maxWidth: "none", ...extra }); star.appendChild(im); return im; };
-      parts = { halo: part("flare"), fringe: part("flare", { filter: "hue-rotate(150deg) saturate(1.6)", opacity: "0.22" }), burst: part("glint"), streak: part("streak") };
-    }
-    const place = (im, x, y, w, h, rot = 0, op = 1) => {
-      im.style.width = w.toFixed(1) + "px"; im.style.height = h.toFixed(1) + "px"; // real size, so the photo is never upscaled from a tiny raster
-      im.style.transform = `translate(${(x - w / 2).toFixed(1)}px, ${(y - h / 2).toFixed(1)}px) rotate(${rot.toFixed(2)}deg)`; im.style.opacity = String(op.toFixed(3));
+    video.style.transition = "none"; video.style.transformOrigin = "0 0"; video.style.willChange = "transform, opacity, filter";
+    // The hole: the outer rectangle plus the window polygon, even-odd (a zero-width slit joins them).
+    const pts = WINDOW_POLY.map(([x, y]) => `${(x * 100).toFixed(3)}% ${(y * 100).toFixed(3)}%`);
+    // Only when the video really is on the freeze frame (a seek can fail without byte ranges): otherwise the
+    // whole video just crossfades away.
+    const onFreeze = Math.abs(video.currentTime - CUT_T) < 0.12;
+    if (onFreeze) video.style.clipPath = `polygon(evenodd, 0% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 0%, ${pts.join(", ")}, ${pts[0]}, 0% 0%)`;
+    const film = root.querySelector(".intro-film");
+    // Window geometry in element px: centre and size, for the push.
+    const xs = WINDOW_POLY.map((p) => p[0]), ys = WINDOW_POLY.map((p) => p[1]);
+    const ex = ((Math.min(...xs) + Math.max(...xs)) / 2) * rect.w, ey = ((Math.min(...ys) + Math.max(...ys)) / 2) * rect.h;
+    const ww = (Math.max(...xs) - Math.min(...xs)) * rect.w, wh = (Math.max(...ys) - Math.min(...ys)) * rect.h;
+    const c0x = rect.left + bx + ex, c0y = rect.top + by + ey;             // window centre on screen now
+    const zEnd = PUSH_DEPTH * Math.max(W / (0.74 * ww), H / (0.74 * wh), 1.2); // the chamfered opening clears the screen
+    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2); // v1's flight curve
+    const R = reduced ? 600 : REVEAL_MS;
+    let t0 = 0, focused = false, frameOn = false, lastZ = 1;
+    const begin = () => {
+      t0 = performance.now();
+      root.style.transition = "none"; root.style.background = "transparent"; // the scene is behind the video now
+      // The grain/vignette overlay must not cover the window (it would grey the black): it keeps to the cockpit and
+      // leaves with the video.
+      if (film) { film.style.transition = "none"; film.style.opacity = "0"; }
+      // The scene starts black inside the window and comes up: stars first, then nebula and planets.
+      opts.emit?.("introGrade", { bg: [0, 0, 0], tint: [0, 0, 0], exposure: 0.0, hold: 0, ease: R, starCurve: STAR_CURVE, exposeCurve: EXPOSE_CURVE });
+      opts.sound?.("enter");          // our ambience fades in under the reveal...
+      fadeOutVideo(R);                // ...while the video's soundtrack fades out
+      requestAnimationFrame(step);
     };
     const step = () => {
-      const k = ZOOM ? Math.min(1, (performance.now() - t0) / ZOOM) : 1;
-      const e = k * k * (3 - 2 * k), z = 1 + 3.2 * k * k * k;    // pan eases in and out; the push accelerates
-      const sx = sx0 + (W / 2 - sx0) * e, sy = sy0 + (H * 0.45 - sy0) * e;
-      video.style.transform = `translate(${(sx - rect.left - z * px * rect.w).toFixed(1)}px, ${(sy - rect.top - z * py * rect.h).toFixed(1)}px) scale(${z.toFixed(4)})`;
-      // The star: a hard white core with a soft blue halo and a thin horizontal lens streak, all growing.
-      const g = Math.pow(k, 2.4), core = 1.5 + g * D * 0.35, halo = 10 + Math.pow(k, 1.6) * D * 0.7;
-      const streak = 40 + Math.pow(k, 1.3) * W * 1.4, sh = 1 + g * 40;
-      if (parts) {
-        // A real star flaring in the lens: Hubble halo, Webb diffraction spikes, a blue anamorphic streak and a faint
-        // chromatic fringe, all growing; the frame itself overexposes (brighter, flatter, paler) like a camera
-        // pushed past its range, and the white bleeds out from the star until it fills the screen.
-        const hs = 70 + Math.pow(k, 1.5) * D * 1.5, bs = 46 + Math.pow(k, 1.35) * D * 0.95;
-        const sw = 120 + Math.pow(k, 1.2) * W * 2.2, shh = Math.max(6, sw / 24) * (1 + g * 1.5);
-        place(parts.halo, sx, sy, hs, hs, 45, 0.85); parts.halo.style.filter = `blur(${(hs * 0.012).toFixed(1)}px)`; // soft, like light scattered in the lens
-        place(parts.fringe, sx, sy, hs * 1.07, hs * 1.07, 45, 0.22); parts.fringe.style.filter = `hue-rotate(150deg) saturate(1.6) blur(${(hs * 0.016).toFixed(1)}px)`;
-        place(parts.burst, sx, sy, bs, bs, 4 + k * 6, 1);
-        place(parts.streak, sx, sy, sw, shh, 0, Math.min(0.85, 0.45 + k)); parts.streak.style.filter = `blur(${(1 + g * 6).toFixed(1)}px)`;
-        video.style.filter = `brightness(${(1 + g * 3).toFixed(3)}) contrast(${(1 - g * 0.45).toFixed(3)}) saturate(${(1 - g * 0.6).toFixed(3)})`;
-        const r0 = core * 0.6, r1 = core + halo * 0.5;
-        wash.style.background = `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fbfdff ${r0.toFixed(1)}px, rgba(240,248,255,${Math.min(1, 0.25 + k).toFixed(3)}) ${r1.toFixed(1)}px, rgba(236,246,255,${Math.pow(k, 1.5).toFixed(3)}) ${(r1 + D * 0.6).toFixed(1)}px)`;
-      } else {
-        star.style.background =
-          `radial-gradient(circle at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, #fff 0, #fff ${core.toFixed(1)}px, rgba(215,238,255,.8) ${(core + halo * 0.15).toFixed(1)}px, rgba(160,205,255,.35) ${(core + halo * 0.45).toFixed(1)}px, rgba(140,190,255,0) ${(core + halo).toFixed(1)}px),` +
-          `radial-gradient(${streak.toFixed(0)}px ${sh.toFixed(1)}px at ${sx.toFixed(1)}px ${sy.toFixed(1)}px, rgba(235,246,255,.9), rgba(180,215,255,0))`;
+      const t = performance.now() - t0;
+      if (reduced) {
+        // Crossfade: the scene comes up inside the window, then the cockpit fades away; then the board.
+        const k = Math.min(1, t / R), k2 = onFreeze ? Math.min(1, Math.max(0, (t - R) / 600)) : Math.min(1, t / R);
+        video.style.opacity = String((1 - k2).toFixed(3));
+        if (!focused && k >= 1) { focused = true; frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0); opts.emit?.("introFocus", true); }
+        if (focused) frame?.setOpacity(k2);
+        if (k2 < 1) return requestAnimationFrame(step);
+        return done();
       }
-      star.style.opacity = String(Math.min(1, k * 6).toFixed(3)); // lights up in the first moments
-      wash.style.opacity = String((parts ? Math.pow(Math.max(0, (k - 0.2) / 0.8), 1.6) : Math.pow(Math.max(0, (k - 0.35) / 0.65), 2.2)).toFixed(3));
-      if (k < 1) return requestAnimationFrame(step);
-      wash.style.background = "#f4faff"; wash.style.opacity = "1"; star.remove(); // fully white at the cut
-      video.style.filter = "";
-      setTimeout(swap, HOLD);
+      const pk = Math.min(1, Math.max(0, (t - R * PUSH_AT) / PUSH_MS)), e = ease(pk);
+      if (!focused && pk > 0) {
+        focused = true;
+        frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
+        opts.emit?.("introFocus", true); // the scene's camera flies in as we push through the window
+      }
+      // Push: scale from the window centre, drifting that centre to the middle of the screen.
+      const z = 1 + (zEnd - 1) * e;
+      const sx = c0x + (W / 2 - c0x) * e, sy = c0y + (H / 2 - c0y) * e;
+      video.style.transform = `translate(${(sx - rect.left - z * ex).toFixed(2)}px, ${(sy - rect.top - z * ey).toFixed(2)}px) scale(${z.toFixed(5)})`;
+      // As it leaves, the cockpit softens (motion blur at speed, a little defocus) and fades.
+      const speed = Math.abs(z - lastZ) / Math.max(1e-3, zEnd - 1) * 60; lastZ = z;
+      const fade = Math.min(1, Math.max(0, (pk - 0.45) / 0.55));
+      video.style.opacity = String((1 - fade * fade * (3 - 2 * fade)).toFixed(3));
+      video.style.filter = `blur(${(PUSH_BLUR * Math.min(1, speed) + 2 * fade).toFixed(2)}px) brightness(${(1 - 0.35 * fade).toFixed(3)})`;
+      // Our frame fades in last, over the end of the push.
+      const fk = Math.min(1, Math.max(0, (t - (R * PUSH_AT + PUSH_MS - FRAME_FADE_MS)) / FRAME_FADE_MS));
+      if (focused) { frame?.setOpacity(fk * fk * (3 - 2 * fk)); frameOn = fk >= 1; }
+      if (pk < 1 || !frameOn || t < R) return requestAnimationFrame(step);
+      done();
     };
-    const swap = () => {
-      fadeOutVideo();
-      video.style.opacity = "0";
-      root.style.background = "transparent";
-      frame?.setOpening(null, W, H); frame?.setZ(2); frame?.setOpacity(0);
-      opts.emit?.("introFocus", true);
-      wash.style.transition = `opacity ${FALL}ms cubic-bezier(.16,1,.3,1)`;
-      requestAnimationFrame(() => { wash.style.opacity = "0"; });
-      const t1 = performance.now();
-      const fadeFrame = () => { const k = Math.min(1, (performance.now() - t1 - 300) / 1000); if (k > 0) frame?.setOpacity(k * k * (3 - 2 * k)); if (k < 1) setTimeout(fadeFrame, 16); };
-      reduced ? frame?.setOpacity(1) : fadeFrame();
-      setTimeout(() => wash.remove(), FALL + 100);
-      finish();
-    };
-    // Let the menu card fade (.3 s) before the star lights up.
-    setTimeout(() => { t0 = performance.now(); step(); }, reduced ? 0 : 380);
+    const done = () => { video.style.opacity = "0"; video.pause(); frame?.setOpacity(1); finish(); };
+    // Let the menu card fade (.3 s) before the window clears.
+    setTimeout(begin, reduced ? 0 : 380);
   }
   function finish() {
-    opts.sound?.("enter"); // our ship sound starts only once the video is over
+    opts.sound?.("enter"); // our ship sound (already fading in under the reveal)
     root.remove(); removeEventListener("resize", place);
     opts.emit?.("introHud", true);
     opts.onDone?.(chosen);

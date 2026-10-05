@@ -28,10 +28,51 @@ function usePhoto(mat, kind, renderer, small, bump) {
   const name = PHOTO[kind]; if (!name) return;
   photoTex(name, renderer, small).then((t) => {
     if (!t) return;
+    if (mat.isShaderMaterial) { mat.uniforms.tAlb.value = t; mat.uniforms.uBump.value = bump ? Math.min(0.06, bump * 0.02) : 0; mat.uniforms.uTexel.value.set(1 / t.image.width, 1 / t.image.height); return; }
     mat.map = t; mat.normalMap = null;
     if (bump) { mat.bumpMap = t; mat.bumpScale = bump; }
     mat.needsUpdate = true;
   });
+}
+// Worlds lit the way the v1 portfolio lights them (its PLANET_FRAG): one sun, a hard terminator
+// (smoothstep -0.015..0.03), Lambert × 2.4 with a whisper of ambient, relief from the map's own luminance, a
+// tight Blinn highlight only where asked (oceans), and an atmosphere rim pow(1-N·V, 5) on the lit side.
+// Photo maps (NASA-based, CC BY) stay the surface; `color` dims paused companies; `emissiveIntensity` is the
+// faint glow of a live moon.
+function worldMaterial({ map = null, atmo = new THREE.Color(0, 0, 0), atmoK = 0, spec = 0, sun }) {
+  const color = new THREE.Color(1, 1, 1), emissive = new THREE.Color(0.75, 0.82, 0.9);
+  const m = new THREE.ShaderMaterial({
+    uniforms: { tAlb: { value: map }, uSun: { value: sun }, uSunColor: { value: new THREE.Color(1.0, 0.96, 0.9) }, uBump: { value: 0 }, uTexel: { value: new THREE.Vector2(1 / 1024, 1 / 512) },
+      uAtmo: { value: new THREE.Color(atmo) }, uAtmoK: { value: atmoK }, uSpec: { value: spec }, uTint: { value: color }, uEmit: { value: emissive }, uEmitK: { value: 0 }, uOpacity: { value: 1 } },
+    vertexShader: `varying vec2 vUv; varying vec3 vObjN; varying vec3 vWorldPos; varying vec3 vWorldN;
+      void main(){ vUv = uv; vObjN = normalize(position); vec4 wp = modelMatrix * vec4(position, 1.0); vWorldPos = wp.xyz; vWorldN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * wp; }`,
+    fragmentShader: `precision highp float;
+      uniform mat4 modelMatrix; uniform sampler2D tAlb; uniform vec3 uSun, uSunColor, uAtmo, uTint, uEmit; uniform float uBump, uAtmoK, uSpec, uEmitK, uOpacity; uniform vec2 uTexel;
+      varying vec2 vUv; varying vec3 vObjN; varying vec3 vWorldPos; varying vec3 vWorldN;
+      float lum(vec2 uv){ return dot(texture2D(tAlb, uv).rgb, vec3(0.3, 0.55, 0.15)); }
+      void main(){
+        vec3 A = texture2D(tAlb, vUv).rgb * uTint;
+        vec3 Ng = normalize(vWorldN), N = Ng, n = normalize(vObjN);
+        vec3 L = normalize(uSun), V = normalize(cameraPosition - vWorldPos);
+        if (uBump > 0.0) {
+          vec2 ex = vec2(uTexel.x * 1.5, 0.0), ey = vec2(0.0, uTexel.y * 1.5);
+          float hx = (lum(vUv + ex) - lum(vUv - ex)) / (2.0 * ex.x * 6.2832), hy = (lum(vUv + ey) - lum(vUv - ey)) / (2.0 * ey.y * 3.1416);
+          vec3 T = normalize(vec3(-n.z, 0.0, n.x) + 1e-5), B = cross(n, T);
+          N = normalize(mat3(modelMatrix) * normalize(n - uBump * (hx * T + hy * B)));
+        }
+        float geo = dot(Ng, L), lit = smoothstep(-0.015, 0.03, geo);
+        float ndl = max(dot(N, L), 0.0) * lit;
+        vec3 col = A * uSunColor * ndl * 2.4 + A * 0.0035;
+        vec3 H = normalize(L + V); col += uSunColor * pow(max(dot(N, H), 0.0), 140.0) * uSpec * lit;
+        float rim = pow(1.0 - max(dot(Ng, V), 0.0), 5.0);
+        col += uAtmo * rim * smoothstep(-0.2, 0.35, geo) * uAtmoK;
+        col += uEmit * uEmitK * (0.4 + 0.6 * rim);
+        gl_FragColor = vec4(col, uOpacity);
+      }`,
+  });
+  m.color = color; // dimming for paused companies writes here
+  Object.defineProperty(m, "emissiveIntensity", { get: () => m.uniforms.uEmitK.value, set: (v) => { m.uniforms.uEmitK.value = v; } });
+  return m;
 }
 function usePhotoClouds(mat, renderer, small) {
   photoTex("earth-clouds", renderer, small).then((t) => {
@@ -45,6 +86,13 @@ import { createFrame, frameMetrics } from "./frame.js";
 import { makeDrone, makeFighter, makePod, makeHostile } from "./carriers.js";
 import * as snd from "./sound.js";
 import { createRealFx } from "./realfx.js";
+import { createPilot } from "./pilot.js";
+import { createFlares } from "./flares.js";
+import { MotionBlurPass, FinishShader, VELOCITY_LAYER } from "./post.js";
+import { createFleet } from "./fleet.js";
+import { shortcutsOverlay, KEYMAP } from "./keys.js";
+import { createStation } from "./station.js";
+import { settings as SET, onChange as onSettings, save as saveSettingsStore, openSettingsPanel, quiet as quietHours } from "./settings.js";
 import { host, hostOn, onHostChange } from "./host.js";
 import { createFloat, floatSupport, FLOAT_TIP, FLOAT_TIP_VIDEO } from "./float.js";
 
@@ -56,9 +104,15 @@ const C = {
 const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
 const MONO = 'ui-monospace, Menlo, monospace';
 const SUN = new THREE.Vector3(1.0, 0.28, 0.12).normalize(); // off-screen to the right: hard terminators
-// Motion feel (tune here). camera/zoom: seconds for a move to settle (critically damped springs, no overshoot);
-// ships: multiplier on carrier flight times; effects: multiplier on how long effects linger.
-export const MOTION = { camera: 2.6, zoom: 1.2, ships: 2.3, effects: 1.25, maxDt: 1 / 20 };
+// Motion tempo (tune here). Everything is expressed relative to the v1 portfolio's solar system, so the two share
+// one calm tempo: v1 flies the camera in 2.0-2.6 s with an ease-in-out cubic and an outward arc, damps free camera
+// motion at exp(-5·dt), orbits worlds at 0.6/d^1.5 rad/s and moons at 0.11-0.16 rad/s, spins planets at
+// 0.04-0.08 rad/s and clamps dt to 50 ms. `tempo` scales all of it (1 = v1; lower = slower).
+// camera: seconds per camera flight (v1: 2.6 from the overview); zoom: settle time for wheel/pinch/keys;
+// orbits: moons and task vessels; spin: planet rotation; ships: higher = slower craft (v1 has none; calm cruise);
+// effects: how long transient effects linger; sky: nebula drift and star parallax.
+export const MOTION = { tempo: 1, camera: 2.6, zoom: 1.4, orbits: 1, spin: 1, ships: 2.3, effects: 1.25, sky: 1, freeDamp: 5, maxDt: 1 / 20 };
+const tempo = () => Math.max(0.2, MOTION.tempo);
 // Exact critically damped spring step toward `goal` (x, v scalars). Frame-rate independent.
 function spring(x, v, goal, w, dt) {
   const e = Math.exp(-w * dt), d = x - goal, t = v + w * d;
@@ -69,6 +123,7 @@ const hash = (s) => { let h = 2166136261; for (const ch of String(s)) h = Math.i
 
 export async function startScene({ canvas, kbd, reduced }) {
   const look = { x: 0, y: 0, tx: 0, ty: 0 }; // parallax input (mouse or tilt)
+  let hudFade = 1; // 0 while the intro runs: labels, readouts and the caption come in with the HUD
   const forceRender = new URLSearchParams(location.search).has("forcerender"); // testing only: keep rendering in a hidden tab
   // The loop never waits for input. rAF does not fire in hidden documents (and some embedded panes
   // report hidden while on screen), so a hidden page falls back to a slow timer instead of stopping.
@@ -92,7 +147,18 @@ export async function startScene({ canvas, kbd, reduced }) {
   let pr = dpr; // the pixel ratio in use: capped while floating
   renderer.setPixelRatio(dpr);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.5;
+  const EXPOSURE = 1.0; // v1
+  // Visual settings (the settings panel writes these; they apply live).
+  const VIS = { blur: !tier.mobile || tier.name !== "low", bloom: 1, dof: false, grain: true, fovKick: true };
+  let speedK = 0, baseFov = 52, lastInput = performance.now(), batterySaver = false;
+  const labelGate = (near) => (SET.display.labels === "none" ? 0 : SET.display.labels === "near" ? (near ? 1 : 0) : 1);
+  hostOn("pointerdown", () => { lastInput = performance.now(); }, true);
+  hostOn("keydown", () => { lastInput = performance.now(); }, true);
+  // Battery saver: on when asked, and (where the Battery API exists) only while unplugged.
+  const battery = navigator.getBattery?.().catch(() => null);
+  const updateBattery = async () => { const b = await battery; batterySaver = !!SET.visual.battery && (!b || !b.charging); };
+  battery?.then((b) => b?.addEventListener?.("chargingchange", updateBattery));
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); toggleList(true); });
 
@@ -148,7 +214,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (reduced) return;
     lightning.next -= dt;
     if (lightning.next <= 0) {
-      lightning.next = 8 + Math.random() * 17;
+      lightning.next = (8 + Math.random() * 17) / Math.max(0.05, SET.visual.density);
       const slot = lightning.slots.find((x) => x.t < 0) ?? lightning.slots[0];
       const c = NEBULA_CENTRES[Math.floor(Math.random() * 3)];
       slot.dir.copy(c).normalize().add(new THREE.Vector3().randomDirection().multiplyScalar(0.18)).normalize();
@@ -184,7 +250,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   envScene.add(rimGlow, sunBall);
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envMap = pmrem.fromScene(envScene, 0, 0.1, 1000).texture;
-  const sunLight = new THREE.DirectionalLight(0xfff4e6, 10); // bright sun; ACES keeps the lit side from washing out
+  const sunLight = new THREE.DirectionalLight(0xfff4e6, 6.5); // bright sun; ACES keeps the lit side from washing out
   sunLight.position.copy(SUN).multiplyScalar(100);
   world.add(sunLight, new THREE.AmbientLight(0x202428, 0.06)); // night sides stay black
   const makeUfoDrawn = fx.createUfoFactory(envMap, tier);
@@ -192,28 +258,39 @@ export async function startScene({ canvas, kbd, reduced }) {
   const particles = fx.createParticles(tier.particles, dpr);
   world.add(particles.points);
   // Real imagery for light, fire and craft (photos and footage, assets/fx); procedural shapes until each loads.
-  const rfx = createRealFx({ tier, reduced, camera, world, sun: SUN, particles });
-  // Run craft: a NASA Juno render with a soft beam of real laser-profile light below it (world-space quad).
-  function makeUfo() {
-    const g = makeUfoDrawn();
-    const rb = rfx.beam(new THREE.Color(0.82, 0.88, 0.96), 0.3);
-    rb.userData.keep = true; rb.matrixAutoUpdate = false; rb.matrixWorldAutoUpdate = false; // vertices are in world space
-    g.add(rb); g.userData.rbeam = rb;
-    return rfx.dress(g, "ufo", { size: 2.6, dim: 0.95 });
-  }
-
-  const composer = new EffectComposer(renderer);
+  // Screen-space flares (CSS overlays over the canvas), hidden when a planet or moon is in front of the source.
+  const occluders = [];
+  const flares = createFlares({ canvas, camera, small: tier.mobile || tier.name === "low", reduced, occluders: () => {
+    occluders.length = 0;
+    for (const co of companyObjs.values()) if (co.center) occluders.push(new THREE.Sphere(co.center, co.radius));
+    for (const ao of agentObjs.values()) occluders.push(new THREE.Sphere(ao.pos, ao.size));
+    return occluders;
+  } });
+  const rfx = createRealFx({ tier, reduced, camera, world, sun: SUN, particles, envMap, flares });
+  const fleet = createFleet({ world, envMap, small: tier.mobile || tier.name === "low", reduced, low: tier.name === "low", layer: VELOCITY_LAYER });
+  const retiring = new Map(); // completed vessels: a gentle bloom, then they leave
+  // The settings station: parked off to one side of the system, below the planets and clear of the KPI band.
+  const station = createStation({ envMap, layer: VELOCITY_LAYER });
+  world.add(station.group);
+  const stationPos = () => (portrait ? new THREE.Vector3(9, -17, -50) : new THREE.Vector3(17, -15, -46));
+  // Pass order: render → depth of field (opt-in, still frames only) → motion blur (camera + objects, only while
+  // things move) → bloom (v1: strength 0.32, radius 0.12, threshold 0.96, half resolution, a warm tint as a light
+  // halation) → glass film → output (ACES, exposure 1.0, sRGB as v1) → finish (v1 grain and vignette; edge CA).
+  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType })); // no MSAA: multisampled half-float targets produced NaN pixels on ANGLE/Metal, which bloom spread over the whole frame
   composer.addPass(new RenderPass(world, camera));
   let bokeh = null;
   if (tier.name === "high" && !tier.mobile && !reduced) {
-    bokeh = new BokehPass(world, camera, { focus: 40, aperture: 0.00012, maxblur: 0.006 });
+    bokeh = new BokehPass(world, camera, { focus: 40, aperture: 0.00002, maxblur: 0.002 });
     bokeh.enabled = false;
     composer.addPass(bokeh);
   }
-  // Threshold above anything the sun can light: only emissive event effects (HDR > 3) bloom.
-  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.45, 0.12, 3.0);
+  const mblur = new MotionBlurPass(world, camera, { half: tier.name !== "high", objects: tier.name !== "low" });
+  mblur.enabled = false;
+  composer.addPass(mblur);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.32, 0.12, 0.96);
+  bloom.bloomTintColors?.forEach((c) => c.set(1.0, 0.97, 0.93));
   const bloomSetSize = bloom.setSize.bind(bloom);
-  bloom.setSize = (w, h) => bloomSetSize(Math.max(64, Math.round(w * tier.bloomScale)), Math.max(64, Math.round(h * tier.bloomScale)));
+  bloom.setSize = (w, h) => bloomSetSize(Math.max(64, Math.round(w * 0.5 * Math.min(1, tier.bloomScale * 1.3))), Math.max(64, Math.round(h * 0.5 * Math.min(1, tier.bloomScale * 1.3))));
   composer.addPass(bloom);
   const film = new ShaderPass(fx.GlassFilmShader);
   film.uniforms.tFrost.value = new THREE.DataTexture(new Uint8Array([128, 128, 0, 0]), 1, 1); film.uniforms.tFrost.value.needsUpdate = true;
@@ -221,6 +298,8 @@ export async function startScene({ canvas, kbd, reduced }) {
   film.uniforms.uGrain.value = 0; // clean: no grain
   composer.addPass(film);
   composer.addPass(new OutputPass());
+  const finish = new ShaderPass(FinishShader);
+  composer.addPass(finish);
 
   // ---------------- warp streaks (camera-attached) ----------------
   const warpGeo = new THREE.BufferGeometry();
@@ -338,7 +417,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       placed.push(r);
       const sx = Math.round(r.x), sy = Math.round(r.y);
       it.plate.mesh.position.set(sx + it.w / 2, -(sy + it.h / 2), 0);
-      it.plate.mat.uniforms.uOpacity.value = it.op;
+      it.plate.mat.uniforms.uOpacity.value = it.op * hudFade; // labels stay hidden through the intro's window reveal
       it.plate.mesh.visible = true;
     }
   }
@@ -372,12 +451,38 @@ export async function startScene({ canvas, kbd, reduced }) {
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = THREE.RepeatWrapping;
     return t;
   }
-  function placeMoon(ao, t) {
-    const a = ao.phase + (reduced ? 0 : t * ao.speed);
-    ao.pos.set(Math.cos(a) * ao.orbitR, 0, Math.sin(a) * ao.orbitR).applyEuler(ao.plane).add(ao.co.center);
+  // Orbits are integrated, not evaluated from the clock: the angle advances by ω·dt on a slightly eccentric
+  // Kepler ellipse (faster near periapsis), so speed, radius, plane or centre can change after a refresh and the
+  // body eases onto its new orbit (critically damped) instead of jumping. Moons follow v1's world law 0.6/R^1.5.
+  const ECC = 0.05, ECC_K = Math.pow(1 - ECC * ECC, -1.5);
+  const qTmp = new THREE.Quaternion();
+  function stepOrbit(o, dt, goal) {
+    // goal: { w, r, q (Quaternion), center (Vector3) }; o keeps the smoothed state
+    if (!o.init) { Object.assign(o, { init: true, ang: o.ang ?? 0, w: goal.w, r: goal.r, rv: 0, q: goal.q.clone(), off: new THREE.Vector3(), offV: new THREE.Vector3() }); }
+    if (dt > 0) {
+      o.w += (goal.w - o.w) * easeK(dt, 1.2);
+      const c = 1 + ECC * Math.cos(o.ang);
+      o.ang += reduced ? 0 : o.w * c * c * ECC_K * dt;
+      [o.r, o.rv] = spring(o.r, o.rv, goal.r, 2.2, dt);
+      o.q.slerp(goal.q, easeK(dt, 1.6));
+      for (const ax of ["x", "y", "z"]) [o.off[ax], o.offV[ax]] = spring(o.off[ax], o.offV[ax], 0, 2.0, dt);
+    }
+    return o;
+  }
+  function orbitPoint(o, center, out) {
+    const rr = o.r * (1 - ECC * ECC) / (1 + ECC * Math.cos(o.ang));
+    return out.set(Math.cos(o.ang) * rr, 0, Math.sin(o.ang) * rr).applyQuaternion(o.q).add(center).add(o.off);
+  }
+  let frameDt = 0;
+  const v3n = new THREE.Vector3();
+  function placeMoon(ao) {
+    ao.orb ??= { ang: ao.phase };
+    const goal = { w: (0.6 / Math.pow(Math.max(2, ao.orbitR), 1.5)) * tempo() * MOTION.orbits, r: ao.orbitR, q: qTmp.setFromEuler(ao.plane), center: ao.co.center };
+    stepOrbit(ao.orb, ao.orb.at === clock ? 0 : frameDt, goal); ao.orb.at = clock; // once per frame
+    orbitPoint(ao.orb, ao.co.center, ao.pos);
     ao.moon.position.copy(ao.pos); ao.moon.scale.setScalar(ao.size);
     ao.glow.position.copy(ao.pos);
-    ao.orbitLine.position.copy(ao.co.center); ao.orbitLine.rotation.copy(ao.plane); ao.orbitLine.scale.setScalar(ao.orbitR);
+    ao.orbitLine.position.copy(ao.co.center).add(ao.orb.off); ao.orbitLine.quaternion.copy(ao.orb.q); ao.orbitLine.scale.setScalar(ao.orb.r);
     ao.label.position.copy(ao.pos).add(new THREE.Vector3(0, -ao.size - 0.55, 0));
   }
 
@@ -412,7 +517,9 @@ export async function startScene({ canvas, kbd, reduced }) {
         const kind = KIND[c.planet?.kind] ?? { BOX: KIND.desert, CLA: KIND.rocky, VIS: KIND.ocean }[c.prefix] ?? [KIND.desert, KIND.rocky, KIND.ocean, KIND.ice, KIND.gas][Math.floor(hash(c.id ?? c.prefix) * 5)];
         const maps = bakePlanet(renderer, kind, c.planet?.seed ?? hash(c.prefix) * 50, tier.mobile ? 1024 : 2048);
         // Matte: no specular hotspot, relief from the normal map along the terminator.
-        const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), new THREE.MeshStandardMaterial({ map: maps.map, normalMap: maps.normalMap, normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1, metalness: 0 }));
+        const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 48), worldMaterial({ map: maps.map, sun: SUN, atmo: new THREE.Color(look.rim), atmoK: kind === KIND.ocean ? 0.55 : kind === KIND.ice ? 0.35 : kind === KIND.gas ? 0.2 : 0.08, spec: kind === KIND.ocean ? 0.12 : 0 }));
+        planet.layers.enable(VELOCITY_LAYER);
+        planet.onBeforeRender = () => { planet.material.uniforms.uOpacity.value = planet.material.opacity; planet.material.transparent = planet.material.opacity < 1; };
         usePhoto(planet.material, kind, renderer, tier.mobile, kind === KIND.gas ? 0 : kind === KIND.ocean ? 0.6 : 2.5);
         if (maps.clouds) {
           const clouds = new THREE.Mesh(new THREE.SphereGeometry(1.012, 96, 48), new THREE.MeshStandardMaterial({ map: maps.clouds, transparent: true, roughness: 1, metalness: 0, depthWrite: false }));
@@ -427,8 +534,8 @@ export async function startScene({ canvas, kbd, reduced }) {
           fragmentShader: `uniform vec3 uColor; uniform vec3 uSun; varying vec3 vN; varying vec3 vV; varying vec3 vW;
             void main(){ float f = pow(1.0 - max(0.0, dot(vN, vV)), 10.0); float lit = smoothstep(0.05, 0.5, dot(vW, uSun)); gl_FragColor = vec4(uColor * f * lit * 0.5, 1.0); }`,
         }));
-        const track = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0x404040, transparent: true, opacity: 0.35, depthWrite: false }));
-        const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0xb8b8b8, transparent: true, opacity: 0.7, depthWrite: false }));
+        const track = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0x8a9aa8, transparent: true, opacity: 0.09, depthWrite: false }));
+        const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(128).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0xc4ccd4, transparent: true, opacity: 0.34, depthWrite: false }));
         ring.geometry.setDrawRange(0, 0);
         // Gas giants get a thin, matte ring system.
         let rings = null;
@@ -440,7 +547,7 @@ export async function startScene({ canvas, kbd, reduced }) {
           rings = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({ map: rt, transparent: true, side: THREE.DoubleSide, roughness: 1, metalness: 0, depthWrite: false }));
           rings.rotation.x = -1.2;
         }
-        co = { group: new THREE.Group(), planet, rim, track, ring, rings, ringShown: 0, spin: 0.02 + hash(c.prefix) * 0.02, label: textSprite(c.name, { px: 46, worldH: 1.3, color: C.ink, weight: 500 }), prefix: c.prefix, name: c.name };
+        co = { group: new THREE.Group(), planet, rim, track, ring, rings, ringShown: 0, spin: 0.04 + hash(c.prefix) * 0.04 /* v1: 0.04-0.08 rad/s */, label: textSprite(SET.privacy.hideNames ? `Project ${String.fromCharCode(65 + ci)}` : c.name, { px: 46, worldH: 1.3, color: C.ink, weight: 500 }), prefix: c.prefix, name: c.name };
         Object.assign(co.label.userData, { kind: "planet", ownerId: c.prefix });
         co.group.add(planet, rim, track, ring, co.label);
         if (rings) co.group.add(rings);
@@ -452,7 +559,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       co.radius = Math.min(5, 2 + openCount * 0.3);
       co.planet.position.copy(co.center); co.planet.scale.setScalar(co.radius);
       { const dim = c.paused ? 0.35 : 1; co.planet.traverse?.((m) => { if (m.material?.color) { m.userData.baseColor ??= m.material.color.clone(); m.material.color.copy(m.userData.baseColor).multiplyScalar(dim); } }); }
-      co.rim.position.copy(co.center); co.rim.scale.setScalar(co.radius);
+      co.rim.position.copy(co.center); co.rim.scale.setScalar(co.radius); co.rim.visible = false; // atmosphere is in the world shader now
       if (co.rings) { co.rings.position.copy(co.center); co.rings.scale.setScalar(co.radius); }
       // The company's overall % is a thin ring around the planet.
       for (const r of [co.track, co.ring]) { r.position.copy(co.center); r.scale.setScalar(co.radius * 1.32); r.rotation.set(-1.25, 0, 0.18); }
@@ -466,7 +573,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         co.pct = cpText ? textSprite(cpText, { px: 34, worldH: 0.55, color: C.ink2, weight: 400 }) : null;
         if (co.pct) { co.group.add(co.pct); Object.assign(co.pct.userData, { kind: "pct", ownerId: c.prefix }); }
       }
-      if (co.pct) co.pct.position.copy(co.center).add(new THREE.Vector3(0, -co.radius - 3.0, 0));
+      if (co.pct) { co.pct.position.copy(co.center).add(new THREE.Vector3(0, -co.radius - 3.0, 0)); co.pct.visible = SET.display.showPct; }
       // Agents are moons orbiting the planet.
       const agents = store.agents.filter((a) => a.company === c.prefix);
       agents.forEach((a, ai) => {
@@ -474,11 +581,11 @@ export async function startScene({ canvas, kbd, reduced }) {
         if (!ao) {
           const h = hash(a.id);
           const mm = bakePlanet(renderer, KIND.moon, h * 80, tier.mobile ? 256 : 512);
-          const moon = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), new THREE.MeshStandardMaterial({ map: mm.map, normalMap: mm.normalMap, normalScale: new THREE.Vector2(0.7, 0.7), roughness: 1, metalness: 0, emissive: new THREE.Color(0.75, 0.82, 0.9), emissiveIntensity: 0 }));
+          const moon = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), worldMaterial({ map: mm.map, sun: SUN })); moon.layers.enable(VELOCITY_LAYER);
           usePhoto(moon.material, KIND.moon, renderer, true, 3);
           moon.material.color.setHSL(0.08 + h * 0.5, 0.12, 0.72 + hash(a.id + "b") * 0.28); // each moon a slightly different rock
           const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: psfSoft, color: new THREE.Color(0.8, 0.86, 0.92), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
-          const orbitLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(96).map((p) => new THREE.Vector3(p.x, 0, p.y))), new THREE.LineBasicMaterial({ color: 0x3a3a3a, transparent: true, opacity: 0.4, depthWrite: false }));
+          const orbitLine = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(96).map((p) => new THREE.Vector3(p.x, 0, p.y))), new THREE.LineBasicMaterial({ color: 0x8a9aa8, transparent: true, opacity: 0.09, depthWrite: false }));
           const label = textSprite(a.name, { px: 40, worldH: 0.62, color: C.ink, weight: 500 });
           Object.assign(label.userData, { kind: "moon", ownerId: a.id });
           world.add(moon, glow, orbitLine, label);
@@ -491,7 +598,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         ao.orbitR = co.radius + (portrait ? 2.4 + ai * 1.5 : 3.2 + ai * 2.1); // tighter orbits in portrait: the frame is narrow
         ao.size = 0.42 + hash(a.id + "s") * 0.18;
         ao.data = a;
-        placeMoon(ao, clock);
+        placeMoon(ao);
       });
     });
     for (const [prefix, co] of companyObjs) if (!companies.some((c) => c.prefix === prefix)) { world.remove(co.group); companyObjs.delete(prefix); }
@@ -511,16 +618,19 @@ export async function startScene({ canvas, kbd, reduced }) {
         if (!io) {
           const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: psfSoft, color: new THREE.Color(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
           const label = textSprite(i.identifier, { px: 36, worldH: 0.42, color: C.ink2, font: MONO, weight: 500 });
-          const orbit = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(64).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0x7a8794, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
+          const orbit = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(64).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: 0x8a9aa8, transparent: true, opacity: 0.06, depthWrite: false }));
           const arc = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.Path().absarc(0, 0, 1, 0, Math.PI * 2).getSpacedPoints(96).map((p) => new THREE.Vector3(p.x, p.y, 0))), new THREE.LineBasicMaterial({ color: new THREE.Color(0.9, 0.92, 0.95), transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false }));
           arc.geometry.setDrawRange(0, 0);
           world.add(sprite, label, orbit, arc);
-          io = { id: i.id, sprite, label, orbit, arc, phase: hash(i.id) * Math.PI * 2, speed: 0.08 + hash(i.id + "s") * 0.07, hidden: false, arcPct: -1 };
+          io = { id: i.id, sprite, label, orbit, arc, phase: hash(i.id) * Math.PI * 2, speed: 0.11 + hash(i.id + "s") * 0.05, hidden: false, arcPct: -1 };
           issueObjs.set(i.id, io);
+          fleet.add(i.id, hash(i.id + "hull"));
         }
         io.data = { ...i, company: c.prefix };
         io.hostAgent = agentObjs.get(i.assigneeAgentId) ?? null;
-        io.center = io.hostAgent ? io.hostAgent.pos : co.center;
+        const newCenter = io.hostAgent ? io.hostAgent.pos : co.center;
+        if (io.center && io.center !== newCenter && io.orb?.init) io.orb.off.add(io.center).sub(newCenter); // ease over from the old host
+        io.center = newCenter;
         io.tilt = io.hostAgent ? io.hostAgent.tilt : new THREE.Euler(0.5, hash(c.prefix) * 6, 0);
         io.radius = { in_review: 1.0, in_progress: 1.35, todo: 1.8, blocked: 1.6 }[i.status] + (hash(i.id + "r") - 0.5) * 0.2 + (io.hostAgent ? 0 : co.radius + 1.2);
         const prio = { critical: 1.0, urgent: 1.0, high: 0.85, medium: 0.68, low: 0.52 }[i.priority] ?? 0.6;
@@ -537,7 +647,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         io.arcPct = e && e.pct != null ? e.pct : -1;
         if (io.arcShown == null) io.arcShown = reduced ? io.arcPct : 0;
         const estimating = store.board.etaRunning?.includes(i.identifier);
-        const pText = estimating && io.arcPct < 0 ? `${i.identifier} · estimating…` : io.arcPct >= 0 ? `${i.identifier} · ${io.arcPct}% · ${e.eta}${estimating ? " · estimating…" : ""}` : i.identifier;
+        const pText = !SET.display.showPct ? i.identifier : estimating && io.arcPct < 0 ? `${i.identifier} · estimating…` : io.arcPct >= 0 ? `${i.identifier} · ${io.arcPct}% · ${e.eta}${estimating ? " · estimating…" : ""}` : i.identifier;
         if (pText !== io.labelText) {
           io.labelText = pText;
           world.remove(io.label);
@@ -550,7 +660,11 @@ export async function startScene({ canvas, kbd, reduced }) {
         io.arc.position.copy(io.center); io.arc.rotation.copy(io.tilt); io.arc.scale.setScalar(io.radius);
       }
     }
-    for (const [id, io] of issueObjs) if (!seen.has(id)) { world.remove(io.sprite, io.label, io.orbit, io.arc); issueObjs.delete(id); }
+    for (const [id, io] of issueObjs) if (!seen.has(id)) {
+      world.remove(io.sprite, io.label, io.orbit, io.arc); issueObjs.delete(id);
+      const done = b.companies.some((c) => c.issues.some((i) => i.id === id && i.status === "done"));
+      if (done && !reduced) { fleet.complete(id); retiring.set(id, { io, t: 0 }); } else fleet.remove(id);
+    }
     rebuildPickables();
     dirty = true;
   }
@@ -560,18 +674,18 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (const co of companyObjs.values()) pickables.push({ kind: "company", id: co.prefix, pos: () => co.center, r: 80 });
     for (const ao of agentObjs.values()) pickables.push({ kind: "agent", id: ao.id, pos: () => ao.pos, r: 36 });
     for (const io of issueObjs.values()) pickables.push({ kind: "issue", id: io.id, pos: () => io.sprite.position, r: 26 });
+    pickables.push({ kind: "station", id: "station", pos: () => station.group.position, r: 46 });
   }
 
   const tmpV = new THREE.Vector3();
-  function satellitePos(io, t, out) {
-    if (io.status === "blocked") {
-      // Stuck: an ember parked on its orbit, not moving.
-      out.set(Math.cos(io.phase) * io.radius, Math.sin(io.phase) * io.radius, 0);
-    } else {
-      const a = io.phase + (reduced ? 0 : t * io.speed * (io.status === "in_progress" ? 1.4 : 1));
-      out.set(Math.cos(a) * io.radius, Math.sin(a) * io.radius, 0);
-    }
-    return out.applyEuler(io.tilt).add(io.center);
+  // Task vessels orbit at v1's moon tempo (0.11-0.16 rad/s); blocked ones coast to a stop on their orbit.
+  // The orbit plane is the satellite's tilt with its circle in the local XY plane (rotated into XZ for stepOrbit).
+  const XY = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+  function satellitePos(io, t, out, dt = 0) {
+    io.orb ??= { ang: io.phase };
+    const q = new THREE.Quaternion().setFromEuler(io.tilt).multiply(XY);
+    stepOrbit(io.orb, dt, { w: io.status === "blocked" ? 0 : io.speed * tempo() * MOTION.orbits, r: io.radius, q, center: io.center });
+    return orbitPoint(io.orb, io.center, out);
   }
 
   // ---------------- camera rig with inertia ----------------
@@ -617,10 +731,12 @@ export async function startScene({ canvas, kbd, reduced }) {
   const levelDist = () => ({ sky: portrait ? fitSky() ?? 88 : 78, company: portrait ? fitCompany(view.company) ?? 34 : 30, agent: 8, issue: 4.5 });
   let view = { level: "sky", company: null, agent: null, issue: null };
 
-  // Eased flights: 1.4-2.2 s (longer for bigger moves), ease-in-out with a soft settle, zooming in
-  // log-distance so the approach feels even. Reduced motion: a short crossfade instead of a move.
-  const flight = { on: false, t0: 0, dur: 1.6, fromT: new THREE.Vector3(), fromD: 50, enter: false };
+  // Camera flights, as v1 does them: a timed ease-in-out cubic (MOTION.camera s), zooming in log-distance, with a
+  // small outward arc mid-flight when travelling between bodies. A move that interrupts another starts from the
+  // current velocity (a Hermite term that fades out), so it never jerks. Reduced motion: a short crossfade.
+  const flight = { on: false, t0: 0, dur: 2.6, fromT: new THREE.Vector3(), fromD: 50, enter: false, v0T: new THREE.Vector3(), v0D: 0, lift: 0 };
   const smoother = (k) => k * k * k * (k * (6 * k - 15) + 10);           // zero speed and acceleration at both ends
+  const easeCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2); // v1's flight curve
   const enterEase = (k) => 1 - Math.pow(1 - k, 3) * (1 - k * 0.35);      // already moving at the start (intro hand-off)
   function crossfade() {
     try { canvas.animate([{ opacity: 0.25 }, { opacity: 1 }], { duration: 260, easing: "ease-out" }); } catch {}
@@ -641,13 +757,13 @@ export async function startScene({ canvas, kbd, reduced }) {
     rig.follow = follow;
     cs.zoom = false;
     if (reduced) { rig.target.copy(target); rig.dist = dist; flight.on = false; syncSpring(); crossfade(); }
-    else if (opts.enter) {
+    else {
       if (opts.fromDist) rig.dist = Math.max(rig.dist, opts.fromDist);
-      flight.dur = opts.dur ?? 2.2;
-      flight.t0 = performance.now(); flight.fromT.copy(rig.target); flight.fromD = rig.dist; flight.enter = true; flight.on = true;
-    } else {
-      if (opts.fromDist) { rig.dist = Math.max(rig.dist, opts.fromDist); syncSpring(true); }
-      if (flight.on) cancelFlight();
+      const travel = rig.target.distanceTo(target);
+      flight.dur = (opts.dur ?? MOTION.camera) / tempo();
+      flight.t0 = performance.now(); flight.fromT.copy(rig.target); flight.fromD = rig.dist; flight.enter = !!opts.enter; flight.on = true;
+      flight.v0T.copy(cs.vel); flight.v0D = cs.dV;                       // carry the current motion into the new move
+      flight.lift = opts.enter ? 0 : Math.min(0.32, travel / 110);        // v1: arc outward a little when travelling
     }
     rig.vyaw *= 0.3; rig.vpitch *= 0.3;
     dirty = true; activeUntil = performance.now() + (Math.max(flight.on ? flight.dur : 0, MOTION.camera) + 0.8) * 1000;
@@ -681,7 +797,51 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (io.question) seenQuestions.add(id);
     openSlate("issue");
   }
+  // The station: fly over, then open the settings panel.
+  function goStation() {
+    view = { level: "station", company: null, agent: null, issue: null };
+    flyTo(station.group.position.clone(), 9);
+    closeSlate();
+    setTimeout(() => { if (view.level === "station") openSettings(); }, reduced ? 0 : (MOTION.camera / tempo()) * 900);
+  }
+  let settingsPanel = null;
+  function openSettings() {
+    if (settingsPanel) return;
+    settingsPanel = openSettingsPanel({
+      doc: host.doc, snd, keymap: KEYMAP, store, intervals: INTERVALS, version: "2026.10",
+      returnFocus: toolbarSettingsButton(),
+      onClose: () => { settingsPanel = null; if (view.level === "station") goSky(); },
+      actions: {
+        refreshNow: () => stripAction("refresh"),
+        setInterval: async (v) => { try { await act("config", { intervalSec: v }); } catch (err) { notice = err.message; } drawPanel(); },
+        view: () => stripAction("view"),
+        addProject: () => store.emit("openConnect"),
+        pair: () => stripAction("pair"),
+        unpair: () => stopPairing(),
+        floatToggle: () => stripAction("float"),
+        clearData: () => { try { for (const k of Object.keys(localStorage)) if (/^(orbit|sound)/.test(k)) localStorage.removeItem(k); } catch {} },
+        notice: (t) => readout(`• ${t}`, "0"),
+      },
+    });
+  }
+  function saveSettings() { SET.motion.blur = VIS.blur; saveSettingsStore(); }
+  // Apply settings live.
+  let hideNamesWas = SET.privacy.hideNames;
+  function applySettings() {
+    updateBattery();
+    MOTION.tempo = SET.motion.tempo;
+    VIS.blur = SET.motion.blur; VIS.fovKick = SET.motion.fovKick;
+    VIS.bloom = SET.visual.bloom; VIS.dof = SET.visual.dof; VIS.grain = SET.visual.grain;
+    const want = SET.visual.battery ? 1 : dpr; // the quality tier itself lives in localStorage "orbit.tier" (fx.detectTier) and applies on reload
+    if (Math.abs(renderer.getPixelRatio() - want) > 0.01 && !host.mode) { pr = want; renderer.setPixelRatio(pr); layout(); }
+    if (SET.privacy.hideNames !== hideNamesWas) { hideNamesWas = SET.privacy.hideNames; for (const k of [...companyObjs.keys()]) rebuildPlanet(k); }
+    drawPanel(); kick();
+  }
+  onSettings(applySettings);
+  const toolbarSettingsButton = () => host.doc.querySelector('[role=toolbar] button[aria-label="Open settings"]');
+
   function backOut() {
+    if (view.level === "station") { settingsPanel?.close(); return goSky(); }
     if (view.level === "issue" && view.agent) return goAgent(view.agent);
     if (view.level === "issue" || view.level === "agent") return view.company ? goCompany(view.company) : goSky();
     if (view.level === "company") return goSky();
@@ -1035,6 +1195,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   async function estimate(identifier) {
+    if (!SET.data.eta) return;
     try { await act("eta", { issue: identifier }); notice = `Estimating ${identifier} with the local model…`; }
     catch (e) { notice = "Estimate failed: " + e.message; }
     drawSlate();
@@ -1103,7 +1264,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         const born = chat.born.get(m.id);
         const age = (n - 1 - k) / Math.max(1, n);
         const fade = Math.max(0.5, 1 - age * 1.2);
-        const t = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const t = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: !SET.display.clock24 });
         const full = m.role === "tool" ? `> ${m.toolName} ${(m.input || "").replace(/\s+/g, " ")}` : (m.text || "");
         if (!chat.shown.has(m.id)) chat.shown.set(m.id, reduced || now - slate.openedAt < 400 ? full.length : 0);
         let shown = Math.min(full.length, chat.shown.get(m.id));
@@ -1303,7 +1464,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     const items = kpis();
     if (store.mode === "demo") { x.font = `400 11px ${HUDF}`; x.fillStyle = "rgba(222,170,96,0.9)"; x.textAlign = "left"; x.textBaseline = "top"; x.fillText("DEMO", 2, 0); }
-    const cw = w / items.length, big = compact ? Math.min(22, Math.max(14, cw * 0.28)) : Math.min(46, Math.max(26, cw * 0.42));
+    const cw = w / items.length, big = compact ? Math.min(22, Math.max(14, cw * 0.28)) : Math.min(fm.phone ? 34 : 38, Math.max(22, cw * 0.36)); // slimmer KPI band
     const lf = compact ? 8 : 11, lgap = compact ? 11 : 16; // label font and gap under the number
     items.forEach((it, k) => {
       const v = String(it.v);
@@ -1349,7 +1510,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const left = Math.max(0, Math.min(1, (store.countdownAt - Date.now()) / total));
     const secs = Math.max(0, Math.round((store.countdownAt - Date.now()) / 1000));
     const pairState = store.mode === "remote" ? store.link.state : store.pair.state;
-    const viewName = view.level === "sky" ? "system" : view.level === "company" ? "planet" : view.level === "agent" ? "moon" : "satellite";
+    const viewName = view.level === "sky" ? "system" : view.level === "company" ? "planet" : view.level === "agent" ? "moon" : view.level === "station" ? "station" : "satellite";
     const narrow = W < 640 || compact;
     // Small floating window: a minimal strip.
     const items = compact ? [
@@ -1384,6 +1545,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       }
       x.fillStyle = it.on ? `rgba(226,230,234,${Math.max(a, 0.5)})` : col(1);
       x.fillText(it.label, tx, h / 2 + 0.5);
+      if (stripFocus === it.id) { x.strokeStyle = "rgba(226,230,234,0.7)"; x.lineWidth = 1; x.strokeRect(cx + 2.5, 3.5, iw - 5, h - 7); }
       panelPlate.hot.push({ x: cx, y: 0, w: iw, h, fn: "panel:" + it.id });
       cx += iw;
     });
@@ -1409,7 +1571,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const s0 = summary();
     svgFrame.update(W, H, [lx / L, ly / L], {
       tl: ["OBS-01 · SYS 3", `${s0.inProgress} ACTIVE · ${s0.blocked} BLOCKED`],
-      tr: [`OVERALL ${sw ? Math.round(sp / sw) : 0}% · ROUGH`, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })],
+      tr: [`OVERALL ${sw ? Math.round(sp / sw) : 0}% · ROUGH`, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: !SET.display.clock24 })],
       bl: [store.mode === "demo" ? "UPLINK · DEMO DATA" : "UPLINK · PAPERCLIP 3100", store.mode === "remote" ? "VIA PHONE LINK" : "LOCAL"],
       br: [`AZ ${(rig.yaw * 57.3).toFixed(1)}° · EL ${(rig.pitch * 57.3).toFixed(1)}°`, `R ${rig.dist.toFixed(0)}`],
     });
@@ -1465,7 +1627,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     for (let i = readouts.length - 1; i >= 0; i--) {
       const r = readouts[i], age = (now - r.t0) / 1000;
       r.plate.mat.uniforms.uReveal.value = reduced ? 1 : Math.min(1, age / 0.25);   // scan-in
-      r.plate.mat.uniforms.uOpacity.value = age < 5.5 ? 1 : Math.max(0, 1 - (age - 5.5) / 0.8);
+      r.plate.mat.uniforms.uOpacity.value = (age < 5.5 ? 1 : Math.max(0, 1 - (age - 5.5) / 0.8)) * hudFade;
       if (age > 6.3) { glass.remove(r.plate.mesh); r.plate.tex.dispose(); readouts.splice(i, 1); }
     }
     if (readouts.length) activeUntil = Math.max(activeUntil, now + 100);
@@ -1537,7 +1699,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       x.globalAlpha = a;
       x.fillStyle = DOT[it.company] ?? "rgba(150,150,150,0.8)"; x.beginPath(); x.arc(pad + 3, y + 7, 3, 0, 6.28); x.fill();
       x.font = `300 11px ${HUDF}`; x.fillStyle = "rgba(140,144,148,0.8)"; x.textBaseline = "top";
-      x.fillText(new Date(it.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + (it.company ? "  " + it.company : ""), pad + 12, y + 1);
+      x.fillText(new Date(it.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: !SET.display.clock24 }) + (it.company ? "  " + it.company : ""), pad + 12, y + 1);
       x.font = `300 11.5px ${HUDF}`;
       x.fillStyle = it.tone === "+" ? "rgba(170,230,205,0.95)" : it.tone === "-" ? "rgba(232,180,110,0.95)" : "rgba(200,204,208,0.9)";
       const line = wrap(x, it.text, w - pad * 2 - 12)[0] ?? "";
@@ -1599,7 +1761,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       bracketPlate.place(0, 0, pw, ph);
       const x = bracketPlate.begin();
       const L = Math.min(16, size / 3);
-      x.strokeStyle = "rgba(200,204,208,0.55)"; x.lineWidth = 1;
+      x.strokeStyle = "rgba(200,206,212,0.32)"; x.lineWidth = 1;
       for (const [px, py, dx, dy] of [[0, 0, 1, 1], [size, 0, -1, 1], [0, size, 1, -1], [size, size, -1, -1]]) {
         x.beginPath(); x.moveTo(bx + px + 0.5, by + py + dy * L); x.lineTo(bx + px + 0.5, by + py + 0.5); x.lineTo(bx + px + dx * L, by + py + 0.5); x.stroke();
       }
@@ -1621,7 +1783,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   let tickerText = "";
   function drawTicker() {
     const entries = store.log.slice(0, 14);
-    const text = entries.length ? entries.map((e) => `${new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  ${e.text}`).join("      ·      ") + "      ·      " : "No changes recorded yet      ·      ";
+    const text = entries.length ? entries.map((e) => `${new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: !SET.display.clock24 })}  ${e.text}`).join("      ·      ") + "      ·      " : "No changes recorded yet      ·      ";
     if (text === tickerText && tickPlate.canvas.width > 1) return;
     tickerText = text;
     const x = tickPlate.ctx;
@@ -1751,7 +1913,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       return { dur: 2.0, update(k) {
         const travel = Math.min(1, k / 0.7), e = fx.easeInOut(travel);           // 1.4 s across, then the train fades
         const hp = v3().lerpVectors(start, end, e);
-        const burn = Math.sin(Math.PI * Math.min(1, travel * 1.05)) ** 0.7;      // brightens mid-path, then burns out
+        const burn = (1 - Math.exp(-travel * 9)) * Math.pow(1 - Math.min(1, travel), 1.4); // flares quickly, burns out slowly
         const linger = travel < 1 ? 1 : Math.max(0, 1 - (k - 0.7) / 0.3);
         const len = 3.6 * Math.min(1, travel * 3);                                 // the train grows behind the head
         path.closestPointToPoint(v3().copy(hp).addScaledVector(dir, -len), true, tail);
@@ -1759,9 +1921,9 @@ export async function startScene({ canvas, kbd, reduced }) {
         u.uOpacity.value = 1.6 * (travel < 1 ? 0.25 + 0.75 * burn : 0.4) * linger;
         u.uHead.value = travel < 1 ? 0.75 : 0.75 + (k - 0.7) * 2;                    // after burn-out the train dims from the head end
         head.position.copy(hp);
-        head.material.uniforms.uOpacity.value = travel < 1 ? 1.5 * burn : 0;
+        head.material.uniforms.uOpacity.value = travel < 1 ? 0.8 * burn : 0;
         head.scale.setScalar(0.6 + 0.6 * burn);
-        if (travel < 1 && Math.random() < 0.5) particles.emit(hp.clone(), v3().randomDirection().multiplyScalar(0.12), HOT.clone().multiplyScalar(0.25), FROST, 0.25, 0.4); // a few fine embers
+        if (travel < 1 && Math.random() < 0.25) particles.emit(hp.clone(), v3().randomDirection().multiplyScalar(0.12), HOT.clone().multiplyScalar(0.25), FROST, 0.25, 0.4); // a few fine embers
       }, end() { world.remove(trailM, head); trailM.geometry.dispose(); } };
     }
     const head = headSprite(HOT.clone(), 1.6);
@@ -1834,91 +1996,99 @@ export async function startScene({ canvas, kbd, reduced }) {
       particles.emit(head.position.clone(), v3(), ICE.clone().multiplyScalar(0.4), GREY, 0.3, 0.35);
     }, end() { world.remove(head); } };
   }
-  // A new question: a brief amber anamorphic streak across the window (real lens flare), not a drawn ring.
+  // A new question: a small, brief warm-white anamorphic glint near the top of the window (CSS flare).
   function pulse() {
-    rfx.flash(viewPoint(0, 0.2, 6), { name: "streak", size: 2.6, aspect: 9, rot: 0, color: new THREE.Color(0.42, 0.38, 0.34), dur: 1.1 });
+    rfx.flash(viewPoint(0, 0.25, 6), { name: "streak", size: 0.16, aspect: 9, rot: 0, color: [1, 0.93, 0.82], peak: 0.3, attack: 70, decay: 950 });
     return null;
   }
 
-  // UFOs: tied to runs. Arrive when a run starts, hover with a faint beam while it is live, leave after.
+  // ---------------- craft: physics-driven flights (pilot.js) ----------------
+  // Speeds scale with MOTION.ships (higher = slower). Units are world units; a planet is ~2-4 across.
+  const SHIP = () => ({ vmax: 16 / MOTION.ships, amax: 5.5 / MOTION.ships, turn: 1.5, bank: 0.42, reduced });
+  const pilotFor = (g, o = {}) => createPilot(g, { ...SHIP(), ...o });
+
+  // UFOs: tied to runs. A lens craft arrives when a run starts, keeps station above the moon with a faint, wide
+  // headlight cone while it is live, and leaves after.
+  function softCone() {
+    const geo = new THREE.ConeGeometry(1, 1, 32, 1, true); geo.translate(0, -0.5, 0);
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: true,
+      uniforms: { uOpacity: { value: 0 }, uColor: { value: new THREE.Color(0.82, 0.88, 0.96) } },
+      vertexShader: `varying float vY; varying float vF; void main() { vY = -position.y; vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 n = normalize(normalMatrix * normal); vF = abs(dot(n, normalize(-mv.xyz))); gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform float uOpacity; uniform vec3 uColor; varying float vY; varying float vF;
+        void main() { float a = pow(vF, 2.5) * (1.0 - vY) * (1.0 - vY) * smoothstep(0.0, 0.08, vY); gl_FragColor = vec4(uColor * a * uOpacity, 1.0); }`,
+    });
+    const m = new THREE.Mesh(geo, mat); m.userData.keep = true; m.renderOrder = 3; return m;
+  }
+  function makeUfo() {
+    const g = makeUfoDrawn();
+    const cone = softCone(); cone.scale.set(0.85, 1.7, 0.85); cone.position.y = -0.08; g.add(cone); g.userData.cone = cone;
+    return rfx.dress(g, "ufo", { size: 1.5, dim: 0.95 });
+  }
   function ufoArrive(agentId, instant = false) {
     const ao = agentObjs.get(agentId); if (!ao || ufos.has(agentId) || ufos.size >= 4) return;
-    const g = makeUfo();
-    world.add(g);
+    const g = makeUfo(); world.add(g);
     const hover = () => ao.pos.clone().add(new THREE.Vector3(0, 1.9, 0));
-    const from = hover().add(new THREE.Vector3(-26, 14, -18));
-    const u = { g, ao, state: instant || reduced ? "hover" : "arrive", t: 0, from, hover };
-    if (u.state === "hover") g.position.copy(hover());
-    else g.position.copy(from);
+    const pilot = pilotFor(g, { vmax: 12 / MOTION.ships, amax: 3.5 / MOTION.ships, turn: 0.6, bank: 0.18 });
+    const u = { g, ao, state: "hover", t: 0, hover, pilot, beam: 0 };
+    if (instant || reduced) { pilot.pos.copy(hover()); pilot.hold(hover, { face: () => pilot.pos.clone().add(new THREE.Vector3(0, 0, 1)) }); }
+    else {
+      const from = hover().add(new THREE.Vector3(-26, 14, -18)); pilot.pos.copy(from); g.position.copy(from);
+      pilot.fly([from.clone().lerp(hover(), 0.6).add(new THREE.Vector3(0, 3, 0)), hover()], { endFn: hover }); u.state = "arrive";
+    }
     ufos.set(agentId, u);
     activeUntil = performance.now() + 3500;
   }
   function ufoDepart(agentId) {
     const u = ufos.get(agentId); if (!u) return;
     if (reduced) { world.remove(u.g); ufos.delete(agentId); return; }
-    u.state = "depart"; u.t = 0; u.from = u.g.position.clone();
+    u.state = "depart"; u.t = 0;
+    const p = u.g.position.clone(); u.pilot.fly([p.clone().add(new THREE.Vector3(6, 4, -6)), p.clone().add(new THREE.Vector3(24, 16, -26))]);
     activeUntil = performance.now() + 3500;
   }
   function ufoSputter(agentId) {
     const u = ufos.get(agentId); if (!u) return;
     if (reduced) { world.remove(u.g); ufos.delete(agentId); return; }
-    u.state = "sputter"; u.t = 0; u.from = u.g.position.clone();
+    u.state = "sputter"; u.t = 0; u.from = u.g.position.clone(); u.spin = new THREE.Vector3(0.5 + Math.random() * 0.4, 0, 0.9 + Math.random() * 0.5);
     activeUntil = performance.now() + 4000;
   }
   let loneUfo = null;
   function updateUfos(dt, t) {
     for (const [id, u] of ufos) {
-      const { lights, beam, beamMat } = u.g.userData;
       u.t += dt;
-      lights.forEach((l, k) => l.material.color.setScalar(0.75 + 0.45 * Math.max(0, Math.sin(t * 0.9 - k * 0.6))).multiply(new THREE.Color(0.85, 0.92, 1.0)));
-      beamMat.uniforms.uTime.value = t;
-      if (u.g.userData.real?.on) {
-        const rb = u.g.userData.rbeam, top = u.g.position.clone().add(new THREE.Vector3(0, -0.12, 0));
-        rb.userData.set(top, top.clone().add(new THREE.Vector3(0, -1.5, 0)), 0.85);
-        rb.material.uniforms.uOpacity.value = beamMat.uniforms.uOpacity.value * 0.7; rb.material.uniforms.uTime.value = reduced ? 0 : t * 0.05;
-      }
-      if (u.state === "arrive") {
-        const k = Math.min(1, u.t / (3 * MOTION.ships)), e = smoother(k);
-        const mid = u.from.clone().lerp(u.hover(), 0.6).add(new THREE.Vector3(0, 3, 0));
-        u.g.position.copy(new THREE.QuadraticBezierCurve3(u.from, mid, u.hover()).getPoint(e));
-        u.g.rotation.z = (1 - e) * 0.18; u.g.rotation.y += dt * 0.3;
-        beamMat.uniforms.uOpacity.value = 0;
-        if (k >= 1) { u.state = "hover"; u.t = 0; }
-      } else if (u.state === "hover") {
-        const hp = u.hover();
-        u.g.position.set(hp.x, hp.y + (reduced ? 0 : Math.sin(t * 0.45 + u.ao.h * 6) * 0.06), hp.z);
-        u.g.rotation.z *= Math.exp(-dt * 1.5); if (!reduced) u.g.rotation.y += dt * 0.12;
-        beamMat.uniforms.uOpacity.value = Math.min(0.13, u.t * 0.06);
-        beam.scale.set(1, 1.95, 1);
-      } else if (u.state === "sputter") {
-        // Lights stutter, the beam dies, and it drifts off tumbling.
-        lights.forEach((l) => l.material.color.setScalar(Math.random() < 0.3 ? 1.8 : 0.1));
-        beamMat.uniforms.uOpacity.value = Math.random() < 0.2 ? 0.2 : 0;
+      const { beamMat } = u.g.userData; beamMat.uniforms.uOpacity.value = 0; // the drawn cone stays off; the soft cone below is the light
+      const cone = u.g.userData.cone;
+      if (u.state === "arrive") { if (u.pilot.update(dt)) { u.state = "hover"; u.t = 0; u.pilot.hold(u.hover, { face: () => u.pilot.pos.clone().add(new THREE.Vector3(0, 0, 1)) }); } }
+      else if (u.state === "hover") { u.pilot.update(dt); u.beam = Math.min(1, u.beam + dt * 0.25); }
+      else if (u.state === "sputter") {
+        // power lost: the light dies and it drifts off, tumbling slowly (no thrust)
         const k = Math.min(1, u.t / (3.5 * MOTION.ships));
         u.g.position.copy(u.from).add(new THREE.Vector3(-6 * k, -3 * k * k, 8 * k));
-        u.g.rotation.z += dt * 2.2; u.g.rotation.x += dt * 1.1;
+        u.g.rotation.z += dt * u.spin.z * 0.6; u.g.rotation.x += dt * u.spin.x * 0.6;
+        u.beam = Math.max(0, u.beam - dt * 2);
+        if (u.g.userData.real) u.g.userData.real.thrust = 0;
         if (k >= 1) { world.remove(u.g); ufos.delete(id); }
-      } else if (u.state === "depart") {
-        beamMat.uniforms.uOpacity.value = Math.max(0, 0.32 - u.t);
-        const k = Math.min(1, Math.max(0, (u.t - 0.4) / (2.6 * MOTION.ships))), e = k * k;
-        u.g.position.copy(u.from).add(new THREE.Vector3(24, 16, -26).multiplyScalar(e));
-        u.g.rotation.z = -e * 0.4; u.g.rotation.y += dt * 1.5;
-        if (k >= 1) { world.remove(u.g); ufos.delete(id); }
-      }
+      } else if (u.state === "depart") { u.beam = Math.max(0, u.beam - dt * 0.8); if (u.pilot.update(dt) || u.t > 12) { world.remove(u.g); ufos.delete(id); } }
+      cone.material.uniforms.uOpacity.value = 0.13 * u.beam * u.beam;
+      cone.visible = u.beam > 0.01;
     }
     if (loneUfo) {
       loneUfo.t += dt;
-      const k = loneUfo.t / 16;
-      loneUfo.g.position.set(-90 + 180 * k, 22 + Math.sin(k * 6) * 2, -110);
-      loneUfo.g.rotation.y += dt * 0.8;
-      if (k >= 1) { world.remove(loneUfo.g); loneUfo = null; }
+      if (loneUfo.pilot.update(dt) || loneUfo.t > 40) { world.remove(loneUfo.g); loneUfo = null; }
     }
+  }
+  function startLoneUfo() {
+    const g = makeUfo(); g.scale.setScalar(1.4); world.add(g);
+    const pilot = pilotFor(g, { vmax: 9 / MOTION.ships, amax: 2 / MOTION.ships, turn: 0.4, bank: 0.12 });
+    pilot.pos.set(-90, 22, -110); g.position.copy(pilot.pos);
+    pilot.fly([new THREE.Vector3(-30, 24, -112), new THREE.Vector3(30, 21, -108), new THREE.Vector3(90, 23, -110)]);
+    loneUfo = { g, t: 0, pilot };
   }
 
   // ---------------- message carriers: drones out, pods in, hostile ships for questions ----------------
   const flights = [];
-  const hostiles = new Map(); // question id → {g, issueId, slot, state, t, from, hp}
-  const RED = new THREE.Color(1, 0.25, 0.15).multiplyScalar(2.5);
+  const hostiles = new Map(); // question id → {g, issueId, slot, state, t, pilot}
   // A point in front of our window: ndc (x, y) at distance d from the camera.
   function viewPoint(nx, ny, d) {
     const p = new THREE.Vector3(nx, ny, 0.5).unproject(camera).sub(camera.position).normalize();
@@ -1929,87 +2099,77 @@ export async function startScene({ canvas, kbd, reduced }) {
     const ao = agentId ? agentObjs.get(agentId) : null; const co = companyObjs.get(company);
     return ao ? () => ao.pos : co ? () => co.center : null;
   }
-  function trail(p, col, n = 1) { for (let i = 0; i < n; i++) particles.emit(p.clone(), v3().randomDirection().multiplyScalar(0.05), col, GREY, 0.18, 0.4); }
-  function orient(g, from, to, bank) { g.lookAt(to); g.rotateZ(bank); }
-  // A failed delivery: a small, short real-fire burst (the old red puff if the footage has not loaded).
-  function fizzle(pos) { if (rfx.boom(pos, { size: 0.45, dur: 1.1 })) return; for (let i = 0; i < 26; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.6 + Math.random()), RED, GREY, 0.3, 0.6); }
-  // Arrival or delivery: a brief real lens glint with a few fine sparks (no fire).
-  function sparks(pos, col) { snd.play("explosion"); if (rfx.flash(pos, { size: 0.9, color: col.clone().multiplyScalar(0.7), dur: 0.7 })) { for (let i = 0; i < 12; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.5 + Math.random()), col, GREY, 0.14, 0.6); return; } sparksQuiet(pos, col); }
-  function sparksQuiet(pos, col) { for (let i = 0; i < 40; i++) particles.emit(pos.clone(), v3().randomDirection().multiplyScalar(0.8 + Math.random() * 1.6), col, GREY, 0.3, 0.9); }
-  // A destroyed ship: the real fireball flipbook (silent, like all explosions out here).
-  function explode(pos) { snd.play("explosion"); if (!rfx.boom(pos, { size: 0.8, dur: 1.3 * MOTION.effects })) sparksQuiet(pos, new THREE.Color(1, 0.6, 0.25).multiplyScalar(2)); }
-  // Weapons fire: our side a subtle green laser, theirs amber; real beam texture, line tracer as the fallback.
-  const OUR_LASER = new THREE.Color(0.32, 1.0, 0.5), THEIR_LASER = new THREE.Color(0.62, 0.5, 0.4);
-  function shoot(a, b, ours) { if (rfx.bolt(a, b, { color: ours ? OUR_LASER : THEIR_LASER, width: ours ? 0.016 : 0.012, dur: ours ? 0.3 : 0.24 })) return true; return false; }
+  const WARM = [1, 0.95, 0.88];
+  // A failed delivery: a tiny, quiet blast.
+  function fizzle(pos) { rfx.boom(pos, { size: 0.16, light: 0.2 }); }
+  // Arrival or delivery: a brief, small glint (CSS flare), no fire.
+  function sparks(pos, col) { snd.play("explosion"); rfx.flash(pos, { size: 0.03, color: col ? [col.r, col.g, col.b] : WARM, peak: 0.3, attack: 40, decay: 520 }); }
+  // A destroyed ship: the pre-rendered blast, small and distant (silent, like all explosions out here).
+  function explode(pos, force = false) { snd.play("explosion"); rfx.boom(pos, { size: 0.3, light: 0.35, force }); }
+  // Weapons fire: short blaster bolts in small bursts; ours a pale green, theirs a muted warm grey.
+  const OUR_LASER = new THREE.Color(0.45, 0.95, 0.6), THEIR_LASER = new THREE.Color(0.62, 0.5, 0.4);
+  function shoot(a, b, ours) { return rfx.bolt(a, b, { color: ours ? OUR_LASER : THEIR_LASER, width: ours ? 0.011 : 0.01, burst: ours ? 2 : 1, gap: 0.09 }); }
 
-  // Outgoing message: a drone flies out, waits for the POST, drops its data cube with a beam, flies back.
+  // Outgoing message: a drone flies out, waits for the POST, drops its data cube, flies back.
   function sendDrone(agentId, company, label, promise) {
     snd.play("whirr");
     const tgt = targetFor(agentId, company);
     if (!tgt || reduced) return promise.then(() => readout(`▲ Delivered · ${label}`, "+"), (e) => readout(`▼ Not delivered · ${e.message}`, "-"));
-    const g = rfx.dress(makeDrone(), "drone", { size: 0.42 }); g.scale.setScalar(0.7); world.add(g);
-    const f = { g, kind: "drone", t: 0, phase: "out", start: windowBottom(), result: null, label };
+    const g = rfx.dress(makeDrone(), "drone", { size: 0.36 }); world.add(g);
+    const start = windowBottom(); g.position.copy(start);
+    const dest = () => tgt().clone().add(new THREE.Vector3(0, 0.75, 0));
+    const pilot = pilotFor(g); pilot.pos.copy(start);
+    pilot.fly([start.clone().lerp(dest(), 0.5).add(new THREE.Vector3(0, 1.5, 0)), dest()], { endFn: dest });
+    const f = { g, kind: "drone", t: 0, phase: "out", result: null, label, pilot };
     promise.then(() => (f.result = "ok"), (e) => { f.result = "fail"; f.err = e.message; });
     f.update = (dt) => {
       f.t += dt;
-      const dest = tgt().clone().add(new THREE.Vector3(0, 0.75, 0));
-      g.userData.rotors.forEach((r, i) => (r.rotation.z += dt * (20 + i)));
       if (f.phase === "out") {
-        const k = Math.min(1, f.t / (2.2 * MOTION.ships)), e = smoother(k);
-        const mid = f.start.clone().lerp(dest, 0.5).add(new THREE.Vector3(0, 1.5, 0));
-        const p = new THREE.QuadraticBezierCurve3(f.start, mid, dest).getPoint(e);
-        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), Math.sin(k * Math.PI) * 0.4);
-        g.position.copy(p); trail(p, new THREE.Color(0.5, 0.85, 1).multiplyScalar(1.4));
-        if (f.result === "fail" && k > 0.4) { fizzle(p); readout(`▼ Not delivered · ${f.err}`, "-"); return false; }
-        if (k >= 1) { f.phase = "wait"; f.t = 0; }
+        const arrived = pilot.update(dt);
+        if (f.result === "fail" && pilot.s > pilot.L * 0.4) { fizzle(g.position.clone()); readout(`▼ Not delivered · ${f.err}`, "-"); return false; }
+        if (arrived) { f.phase = "wait"; f.t = 0; pilot.hold(dest); }
       } else if (f.phase === "wait") {
-        g.position.copy(dest).add(new THREE.Vector3(0, Math.sin(f.t * 3) * 0.03, 0));
+        pilot.update(dt);
         if (f.result === "ok") { f.phase = "drop"; f.t = 0; }
-        else if (f.result === "fail" || f.t > 25) { fizzle(g.position); readout(`▼ Not delivered · ${f.err ?? "no reply"}`, "-"); return false; }
+        else if (f.result === "fail" || f.t > 25) { fizzle(g.position.clone()); readout(`▼ Not delivered · ${f.err ?? "no reply"}`, "-"); return false; }
       } else if (f.phase === "drop") {
-        const c = g.userData.cube; c.position.y = -0.07 - f.t * 1.2; c.material.color.multiplyScalar(0.97);
-        if (f.t > 0.6) { sparks(tgt().clone(), new THREE.Color(0.6, 0.9, 1).multiplyScalar(1.5)); readout(`▲ Delivered · ${label}`, "+"); f.phase = "back"; f.t = 0; f.from = g.position.clone(); c.visible = false; }
-      } else {
-        const k = Math.min(1, f.t / (1.8 * MOTION.ships)); const p = f.from.clone().lerp(windowBottom(), smoother(k));
-        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0); g.position.copy(p);
-        if (k >= 1) return false;
-      }
+        pilot.update(dt);
+        if (f.t > 0.6) {
+          sparks(tgt().clone()); readout(`▲ Delivered · ${label}`, "+"); f.phase = "back"; f.t = 0;
+          const p = g.position.clone(); pilot.fly([p.clone().add(new THREE.Vector3(0, 0.8, 0)).lerp(windowBottom(), 0.4), windowBottom()], { endFn: windowBottom });
+        }
+      } else if (pilot.update(dt) || f.t > 20) return false;
       return true;
     };
     flights.push(f); activeUntil = performance.now() + 3000;
   }
 
-  // Incoming update: a pod launches from the moon and opens at our window, then the readout appears.
+  // Incoming update: a hauler launches from the moon and arrives at our window, then the readout appears.
   function incomingPod(agentId, company, amber, onArrive) {
     snd.play("ping");
     const tgt = targetFor(agentId, company);
     if (!tgt || reduced || flights.length >= 6) return onArrive();
-    const g = rfx.dress(makePod(amber), "pod", { size: 0.36, engineColor: amber ? new THREE.Color(0.75, 0.66, 0.55) : new THREE.Color(0.8, 0.88, 1) }); world.add(g);
-    const from = tgt().clone(); const side = (Math.random() - 0.5) * 1.2;
+    const g = rfx.dress(makePod(amber), "pod", { size: 0.34, engineColor: amber ? new THREE.Color(0.75, 0.66, 0.55) : new THREE.Color(0.8, 0.88, 1) }); world.add(g);
+    const from = tgt().clone(), side = (Math.random() - 0.5) * 1.2, to = () => viewPoint(side, 0.1, 4.5);
+    const pilot = pilotFor(g); pilot.pos.copy(from); g.position.copy(from);
+    pilot.fly([from.clone().lerp(to(), 0.5).add(new THREE.Vector3(0, 2, 0)), to()], { endFn: to });
     const f = { g, kind: "pod", t: 0, update: (dt) => {
-      f.t += dt; const k = Math.min(1, f.t / (2.4 * MOTION.ships)), e = smoother(k);
-      const to = viewPoint(side, 0.1, 4.5);
-      const mid = from.clone().lerp(to, 0.5).add(new THREE.Vector3(0, 2, 0));
-      const p = new THREE.QuadraticBezierCurve3(from, mid, to).getPoint(e);
-      orient(g, g.position, p.clone().add(p.clone().sub(g.position)), Math.sin(k * 6) * 0.3);
-      g.position.copy(p); g.scale.setScalar(0.6 + k * 0.5);
-      trail(p, amber ? new THREE.Color(0.62, 0.55, 0.48).multiplyScalar(0.6) : new THREE.Color(0.9, 0.92, 0.95));
-      g.userData.beacon.visible = Math.floor(f.t * 4) % 2 === 0;
-      if (k >= 1) { sparks(p, amber ? new THREE.Color(0.7, 0.62, 0.52).multiplyScalar(0.7) : new THREE.Color(0.9, 0.95, 1).multiplyScalar(1.3)); onArrive(); return false; }
+      f.t += dt;
+      if (pilot.update(dt) || f.t > 20) { sparks(g.position.clone(), amber ? new THREE.Color(0.7, 0.62, 0.52) : null); onArrive(); return false; }
       return true;
     } };
     flights.push(f); activeUntil = performance.now() + 3000;
   }
 
-  // Hostile ships: one per waiting question (up to 4), hovering near the edges of our view.
+  // Hostile ships: one per waiting question (up to 4), keeping station near the edges of our view.
   // Their rest points are kept in screen space (NDC), clamped every frame to stay clear of the KPI strip,
   // the readout screens under it, the side handle and the caption, sized by the craft's projected size.
   const HOVER = [[-0.62, 0.42], [0.62, 0.42], [-0.66, -0.25], [0.66, -0.25]];
-  const HOSTILE_D = 5, HOSTILE_SIZE = 0.62;
+  const HOSTILE_D = 5, HOSTILE_SIZE = 0.48;
   function hoverNdc(slot, out = new THREE.Vector2()) {
     const [hx, hy] = HOVER[slot];
     const pxPerUnit = H / (2 * HOSTILE_D * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-    const half = (HOSTILE_SIZE * 0.5 + 0.18) * pxPerUnit + 8;          // craft + idle bob + a margin
+    const half = (HOSTILE_SIZE * 0.5 + 0.18) * pxPerUnit + 8;          // craft + drift + a margin
     const k = sumPlate.rect;
     let top = k.y + k.h;                                               // KPI numbers and labels
     if (fm.phone) top = Math.max(top, fm.y0 + 80 + 56 + 46);           // the two readout screens under them
@@ -2021,27 +2181,31 @@ export async function startScene({ canvas, kbd, reduced }) {
     x = Math.min(Math.max(x, left + half), right - half);
     return out.set((x / W) * 2 - 1, 1 - (y / H) * 2);
   }
-  const ndcTmp = new THREE.Vector2(), ndcTop = new THREE.Vector2();
+  const ndcTmp = new THREE.Vector2();
   let hostileBadge = null;
   function syncHostiles(instant) {
     const qs = allQuestions();
     const want = new Set(qs.map((x) => x.q.id));
-    for (const [id, h] of hostiles) if (!want.has(id) && !h.engaged && h.state !== "dying" && h.state !== "retreat") { h.state = "retreat"; h.t = 0; h.from = h.g.position.clone(); }
-    let slot = 0;
+    for (const [id, h] of hostiles) if (!want.has(id) && !h.engaged && h.state !== "dying" && h.state !== "retreat") retreatHostile(h);
     for (const { issue, company, q } of qs) {
-      if (hostiles.has(q.id)) { slot = Math.max(slot, hostiles.get(q.id).slot + 1); continue; }
+      if (hostiles.has(q.id)) continue;
       if ([...hostiles.values()].filter((h) => h.state !== "dying" && h.state !== "retreat").length >= 4) continue;
       const used = new Set([...hostiles.values()].map((h) => h.slot));
       const sl = [0, 1, 2, 3].find((k) => !used.has(k)) ?? 0;
-      const g = rfx.dress(makeHostile(), "hostile", { size: 0.48, dim: 0.42, warm: 0.12 }); world.add(g);
+      const g = rfx.dress(makeHostile(), "hostile", { size: HOSTILE_SIZE, dim: 0.42, warm: 0.12 }); world.add(g);
       const tgt = targetFor(issue.assigneeAgentId, company.prefix);
-      const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: instant || reduced || !tgt ? "hover" : "arrive", t: 0, fire: 2 + Math.random() * 4, ndc: hoverNdc(sl), d: HOSTILE_D };
-      // Arrival starts where the asking moon is on screen (or off the near side edge), at its depth.
-      if (h.state === "arrive") {
-        const tp = tgt().clone(), pr = tp.clone().project(camera), dist = tp.distanceTo(camera.position);
-        h.from = pr.z < 1 && Math.abs(pr.x) < 1.2 && Math.abs(pr.y) < 1.2 ? { x: pr.x, y: pr.y, d: Math.min(30, dist) } : { x: Math.sign(HOVER[sl][0]) * 1.5, y: h.ndc.y, d: 12 };
+      const h = { g, qid: q.id, issueId: issue.id, slot: sl, state: "hover", t: 0, fire: 22 + Math.random() * 20, ndc: hoverNdc(sl) };
+      h.home = () => viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D);
+      h.pilot = pilotFor(g, { vmax: 9 / MOTION.ships, amax: 3 / MOTION.ships, turn: 1.0, bank: 0.3 });
+      const faceCam = () => camera.position;
+      if (instant || reduced || !tgt) { h.pilot.pos.copy(h.home()); h.pilot.hold(h.home, { face: faceCam }); }
+      else {
+        // arrival starts at the asking moon (or off the near side edge) and comes to rest at its slot
+        const tp = tgt().clone(), pr = tp.clone().project(camera);
+        const start = pr.z < 1 && Math.abs(pr.x) < 1.2 && Math.abs(pr.y) < 1.2 ? tp : viewPoint(Math.sign(HOVER[sl][0]) * 1.5, h.ndc.y, 12);
+        h.pilot.pos.copy(start); h.pilot.fly([start.clone().lerp(h.home(), 0.55), h.home()], { endFn: h.home }); h.state = "arrive";
       }
-      g.position.copy(h.state === "hover" ? viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D) : viewPoint(h.from.x, h.from.y, h.from.d));
+      g.position.copy(h.pilot.pos);
       hostiles.set(q.id, h);
       activeUntil = performance.now() + 3000;
     }
@@ -2049,37 +2213,22 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (hostileBadge) { world.remove(hostileBadge); hostileBadge = null; }
     if (extra > 0) { hostileBadge = textSprite(`+${extra} more waiting`, { px: 34, color: C.amber, font: MONO, weight: 500 }); hostileBadge.material.opacity = 0.9; world.add(hostileBadge); }
   }
-  const tracerMat = new THREE.LineBasicMaterial({ color: new THREE.Color(0.62, 0.5, 0.4).multiplyScalar(0.9), transparent: true, opacity: 0, depthWrite: false });
-  const tracer = new THREE.Line(new THREE.BufferGeometry().setFromPoints([v3(), v3()]), tracerMat); world.add(tracer);
-  let tracerT = 0;
+  function retreatHostile(h) {
+    h.state = "retreat"; h.t = 0;
+    const p = h.g.position.clone(), away = p.clone().sub(camera.position).normalize();
+    h.pilot.fly([p.clone().addScaledVector(away, 6).add(new THREE.Vector3(0, 1, 0)), p.clone().addScaledVector(away, 34)]);
+  }
   function updateHostiles(dt) {
-    tracerT -= dt; tracerMat.opacity = Math.max(0, tracerT * 4);
     for (const [id, h] of hostiles) {
       h.t += dt;
-      // Rest point in screen space, eased toward the clamped slot (a layout change glides, never jumps),
-      // so the craft stays put on screen while the camera moves and never drifts over the HUD.
+      // Rest point in screen space, eased toward the clamped slot (a layout change glides, never jumps).
       h.ndc.lerp(hoverNdc(h.slot, ndcTmp), easeK(dt, 3));
-      const bob = reduced ? 0 : 1;
-      const home = viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D).add(v3().set(Math.sin(clock * 0.4 + h.slot) * 0.15 * bob, Math.cos(clock * 0.3 + h.slot) * 0.1 * bob, 0));
-      h.g.userData.lights.forEach((l, i) => (l.visible = reduced || Math.floor(clock * 0.5 + i) % 4 !== 0));
-      if (h.state === "arrive") {
-        const k = Math.min(1, h.t / (3 * MOTION.ships)), e = smoother(k);
-        // Path in screen space (kept below the HUD's top band), depth eased from the moon's to the rest depth.
-        const yMax = Math.max(h.ndc.y, hoverNdc(0, ndcTop).y); // highest point clear of the HUD
-        const nx = h.from.x + (h.ndc.x - h.from.x) * e, ny = Math.min(h.from.y + (h.ndc.y - h.from.y) * e, yMax);
-        const p = viewPoint(nx, ny, h.from.d + (HOSTILE_D - h.from.d) * e).lerp(home, e * e);
-        h.g.lookAt(camera.position); h.g.position.copy(p);
-        trail(p.clone().add(new THREE.Vector3(0, 0, -0.2)), new THREE.Color(0.6, 0.5, 0.42).multiplyScalar(0.5));
-        if (k >= 1) { h.state = "hover"; h.t = 0; }
-      } else if (h.state === "hover") {
-        h.g.position.copy(home); h.g.lookAt(camera.position);
-        if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 22 + Math.random() * 20; const a = h.g.position, b = viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8);
-          if (!shoot(a.clone(), b, false)) { tracer.geometry.attributes.position.setXYZ(0, a.x, a.y, a.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.25; } } }
-      } else if (h.state === "retreat") {
-        // Pull away into the distance along our line of sight: it shrinks toward its own screen point, clear of the HUD.
-        const k = Math.min(1, h.t / (2 * MOTION.ships)); h.g.position.copy(viewPoint(h.ndc.x, h.ndc.y, HOSTILE_D + 30 * k * k)); h.g.rotation.z += dt * 2;
-        if (k >= 1) { world.remove(h.g); hostiles.delete(id); }
-      } else if (h.state === "dying") { explode(h.g.position.clone()); world.remove(h.g); hostiles.delete(id); }
+      if (h.state === "arrive") { if (h.pilot.update(dt)) { h.state = "hover"; h.t = 0; h.pilot.hold(h.home, { face: () => camera.position }); } }
+      else if (h.state === "hover") {
+        h.pilot.update(dt);
+        if (!reduced) { h.fire -= dt; if (h.fire <= 0) { h.fire = 22 + Math.random() * 20; shoot(h.g.position.clone(), viewPoint((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.8), false); } }
+      } else if (h.state === "retreat") { if (h.pilot.update(dt) || h.t > 12) { world.remove(h.g); hostiles.delete(id); } }
+      else if (h.state === "dying") { explode(h.g.position.clone()); world.remove(h.g); hostiles.delete(id); }
     }
     if (hostileBadge) { // just under the top-right craft, never on the KPI strip
       const n = hoverNdc(1, ndcTmp), pxPerUnit = H / (2 * HOSTILE_D * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
@@ -2096,32 +2245,32 @@ export async function startScene({ canvas, kbd, reduced }) {
       return promise.then(() => { if (h) h.state = "dying"; readout(`▲ Answered · ${label}`, "+"); }, (e) => readout(`▼ Answer not sent · ${e.message}`, "-"));
     }
     h.engaged = true;
-    const g = rfx.dress(makeFighter(), "fighter", { size: 0.62, engineColor: new THREE.Color(0.7, 0.9, 1) }); g.scale.setScalar(0.55); world.add(g);
-    const f = { g, kind: "fighter", t: 0, phase: "in", start: windowBottom(), result: null };
+    const g = rfx.dress(makeFighter(), "fighter", { size: 0.34, engineColor: new THREE.Color(0.7, 0.9, 1) }); world.add(g);
+    const start = windowBottom(); g.position.copy(start);
+    const pilot = pilotFor(g, { vmax: 18 / MOTION.ships, amax: 7 / MOTION.ships, turn: 2.2, bank: 0.55 }); pilot.pos.copy(start);
+    const near = () => h.g.position.clone().add(new THREE.Vector3(0.6, 0.2, 0.4));
+    pilot.fly([start.clone().lerp(near(), 0.5).add(new THREE.Vector3(0.4, 0.6, 0)), near()], { endFn: near });
+    const f = { g, kind: "fighter", t: 0, phase: "in", result: null, shotT: 0.8, pilot };
     promise.then(() => (f.result = "ok"), (e) => { f.result = "fail"; f.err = e.message; });
+    let orbitA = 0;
+    const orbitPt = () => { const hp = h.g.position; return hp.clone().add(new THREE.Vector3(Math.cos(orbitA) * 0.9, Math.sin(orbitA * 0.7) * 0.25, Math.sin(orbitA) * 0.9)); };
     f.update = (dt) => {
       f.t += dt;
-      const hp = h.g.position;
-      if (f.phase === "in") {
-        const k = Math.min(1, f.t / (1.2 * MOTION.ships)), p = f.start.clone().lerp(hp.clone().add(new THREE.Vector3(0.6, 0.2, 0.4)), smoother(k));
-        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), -0.5); g.position.copy(p);
-        g.userData.engines.forEach((e) => trail(e.getWorldPosition(v3()), new THREE.Color(0.75, 0.9, 1).multiplyScalar(1.4)));
-        if (k >= 1) { f.phase = "fight"; f.t = 0; }
-      } else if (f.phase === "fight") {
-        // Circle the hostile, trading shots, until the answer lands (at least 1.5 s).
-        const a = f.t * 3.2, p = hp.clone().add(new THREE.Vector3(Math.cos(a) * 0.7, Math.sin(a * 1.3) * 0.25, Math.sin(a) * 0.7));
-        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0.7); g.position.copy(p);
-        g.userData.engines.forEach((e) => trail(e.getWorldPosition(v3()), new THREE.Color(0.75, 0.9, 1).multiplyScalar(1.3)));
-        if (Math.random() < dt * 3) { snd.play("laser"); const b = hp; if (!shoot(p.clone(), b.clone(), true)) { tracer.geometry.attributes.position.setXYZ(0, p.x, p.y, p.z); tracer.geometry.attributes.position.setXYZ(1, b.x, b.y, b.z); tracer.geometry.attributes.position.needsUpdate = true; tracerT = 0.15; } }
-        if (f.t > 1.5 && f.result === "ok") { h.state = Math.random() < 0.5 ? "dying" : "retreat"; h.t = 0; h.from = hp.clone(); readout(`▲ Answered · ${label}`, "+"); f.phase = "home"; f.t = 0; f.from = p.clone(); }
-        else if (f.t > 1.5 && (f.result === "fail" || f.t > 25)) { fizzle(p); readout(`▼ Answer not sent · ${f.err ?? "no reply"} · question still open`, "-"); h.engaged = false; f.phase = "driven"; f.t = 0; f.from = p.clone(); }
-      } else if (f.phase === "home") {
-        const k = Math.min(1, f.t / (1.4 * MOTION.ships)), p = f.from.clone().lerp(windowBottom(), smoother(k));
-        orient(g, g.position, p.clone().add(p.clone().sub(g.position)), 0); g.position.copy(p); if (k >= 1) return false;
-      } else {
-        g.position.add(new THREE.Vector3(-2, -1.2, -3).multiplyScalar(dt)); g.rotation.x += dt * 4; g.rotation.z += dt * 3;
-        if (Math.random() < 0.4) particles.emit(g.position.clone(), v3(), RED, GREY, 0.25, 0.4);
-        if (f.t > 2) return false;
+      if (f.phase === "in") { if (pilot.update(dt)) { f.phase = "fight"; f.t = 0; pilot.chase(orbitPt, 2.4); } }
+      else if (f.phase === "fight") {
+        // circle the hostile under thrust (a moving chase point), trading short bursts, until the answer lands (≥ 1.5 s)
+        orbitA += dt * 1.1 / MOTION.ships * 1.6; pilot.update(dt);
+        f.shotT -= dt;
+        if (f.shotT <= 0) { f.shotT = 1.3 + Math.random() * 1.2; snd.play("laser"); shoot(g.position.clone(), h.g.position.clone(), true); }
+        if (f.t > 1.5 && f.result === "ok") { h.state = Math.random() < 0.5 ? "dying" : "retreat"; if (h.state === "retreat") retreatHostile(h); readout(`▲ Answered · ${label}`, "+"); f.phase = "home"; f.t = 0;
+          const p = g.position.clone(); pilot.fly([p.clone().lerp(windowBottom(), 0.4).add(new THREE.Vector3(0, 0.6, 0)), windowBottom()], { endFn: windowBottom }); }
+        else if (f.t > 1.5 && (f.result === "fail" || f.t > 25)) { fizzle(g.position.clone()); readout(`▼ Answer not sent · ${f.err ?? "no reply"} · question still open`, "-"); h.engaged = false; f.phase = "driven"; f.t = 0; f.spin = new THREE.Vector3(1.2, 0, 0.9); }
+      } else if (f.phase === "home") { if (pilot.update(dt) || f.t > 15) return false; }
+      else {
+        // disabled: drifting on its last momentum, tumbling slowly, no thrust
+        g.position.addScaledVector(pilot.vel, dt); pilot.vel.multiplyScalar(Math.exp(-dt * 0.3));
+        g.rotation.x += dt * f.spin.x; g.rotation.z += dt * f.spin.z; if (g.userData.real) g.userData.real.thrust = 0;
+        if (f.t > 2.5) return false;
       }
       return true;
     };
@@ -2288,7 +2437,12 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (incoming) incomingPod(ctx.agentId, ctx.company, false, () => readout(`Incoming · ${ctx.agentId ? agentObjs.get(ctx.agentId)?.data?.name ?? "" : ctx.company ?? ""} · ${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null));
     else show();
     feedAdd({ ts: new Date().toISOString(), company: ctx.company ?? null, text: `${mark} ${ev.text(ctx.label, ctx.detail)}`, tone: ev.tone, issueId: ctx.issueId ?? null, agentId: ctx.agentId ?? null });
-    snd.play({ done: "chime", failed: "rumble", question: "alarm", newIssue: "ping", runStart: "whirr" }[type] ?? (ev.tone === "-" ? "warn" : "ping"));
+    const muted = ctx.company && SET.notify.mutedProjects.includes(ctx.company), q = quietHours();
+    const alertOn = { question: SET.notify.question, blocked: SET.notify.blocked, done: SET.notify.done }[type];
+    if (!(alertOn === false || muted || (q && type !== "question"))) snd.play({ done: "chime", failed: "rumble", question: "alarm", newIssue: "ping", runStart: "whirr" }[type] ?? (ev.tone === "-" ? "warn" : "ping"));
+    if (SET.notify.browser && alertOn && !muted && !q && typeof Notification !== "undefined" && Notification.permission === "granted" && (document.hidden || host.mode)) {
+      try { new Notification("Orbit", { body: ev.text(ctx.label, ctx.detail), tag: `orbit-${type}-${ctx.issueId ?? ""}`, silent: true }); } catch {}
+    }
     if (!ev.fx || reduced) return;
     const co = planetFor(ctx.company); const ao = ctx.agentId ? agentObjs.get(ctx.agentId) : null;
     const build = {
@@ -2354,6 +2508,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // ---------------- reacting to data ----------------
   let firstBoard = true;
   store.on("board", ({ prev, next }) => {
+    if (SET.data.pause) return; // updates paused (settings): the board keeps its last state
     const before = new Map();
     if (prev && !firstBoard) for (const c of prev.companies) for (const i of c.issues) before.set(i.id, { ...i, company: c.prefix });
     const prevQs = new Map((prev?.companies ?? []).flatMap((c) => c.issues.flatMap((i) => i.questions.map((q) => [q.id, { ...i, company: c.prefix }]))));
@@ -2365,7 +2520,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       for (const c of next.companies) for (const i of c.issues) {
         const was = before.get(i.id);
         const ctx = { label: i.identifier, issueId: i.id, company: c.prefix, agentId: i.assigneeAgentId };
-        for (const q of i.questions) { nowQs.add(q.id); if (!prevQs.has(q.id)) { fire("question", ctx); queueFx("pulse", pulse, false); } }
+        for (const q of i.questions) { nowQs.add(q.id); if (!prevQs.has(q.id)) { fire("question", ctx); queueFx("pulse", pulse, false); if (SET.camera.autoFocus && issueObjs.has(i.id)) goIssue(i.id); } }
         if (!was) {
           if (OPEN.includes(i.status)) {
             const io = issueObjs.get(i.id);
@@ -2453,6 +2608,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   store.on("demoOut", ({ agentId, company, label }) => sendDrone(agentId, company, label, new Promise((r) => setTimeout(r, 1500))));
   // Intro match-cut hooks: colour grade, forward drift and HUD fade-in.
   const intro = { grade: null, drift: null, hud: store.introPending ? { t0: -1 } : null };
+  hudFade = store.introPending ? 0 : 1; // labels and readouts follow the HUD in after the intro
   if (store.introPending) svgFrame.setHudAlpha(0);
   store.on("introGrade", (g) => { intro.grade = { ...g, t0: performance.now() }; kick(); });
   store.on("introDrift", (d) => { intro.drift = { ...d, t0: performance.now() }; kick(); });
@@ -2473,9 +2629,11 @@ export async function startScene({ canvas, kbd, reduced }) {
       // Hold the video's look at the cut, then ease to ours over g.ease ms.
       const k = g.hold != null && now - g.t0 < g.hold ? 0 : Math.min(1, (now - g.t0 - (g.hold ?? 0)) / g.ease);
       const e = k * k * (3 - 2 * k);
+      // Optional curves (the intro's window reveal): stars come up first, the rest of the scene later.
+      const es = Math.pow(e, g.starCurve ?? 1), ex = Math.pow(e, g.exposeCurve ?? 1);
       world.background.setRGB(g.bg[0] * (1 - e), g.bg[1] * (1 - e), g.bg[2] * (1 - e));
-      starfield.setTint(...g.tint.map((c) => c + (1 - c) * e));
-      renderer.toneMappingExposure = g.exposure + (1.5 - g.exposure) * e;
+      starfield.setTint(...g.tint.map((c) => c + (1 - c) * es));
+      renderer.toneMappingExposure = g.exposure + (EXPOSURE - g.exposure) * ex;
       activeUntil = Math.max(activeUntil, now + 100);
       if (k >= 1) intro.grade = null;
     }
@@ -2505,6 +2663,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       else { const t = now - h.t0; kpi = Math.min(1, t / 300); corners = Math.min(1, Math.max(0, (t - 150) / 300)); strip = Math.min(1, Math.max(0, (t - 300) / 300)); if (t > 700) intro.hud = null; activeUntil = Math.max(activeUntil, now + 100); }
     }
     sumPlate.mat.uniforms.uOpacity.value = kpi; panelPlate.mat.uniforms.uOpacity.value = strip; svgFrame.setHudAlpha(corners);
+    hudFade = kpi; caption.plate.mat.uniforms.uOpacity.value *= kpi;
+    bracketPlate.mat.uniforms.uOpacity.value = kpi; handlePlate.mat.uniforms.uOpacity.value = strip; // the selection brackets and the Activity handle too
     if (!intro.hud && !boardShown) { boardShown = true; drawPanel(); syncFloatButton(); } // float is offered only after the intro
   }
   store.on("listview", (show) => { paused = show; if (!show) { dirty = true; kick(); } });
@@ -2524,19 +2684,20 @@ export async function startScene({ canvas, kbd, reduced }) {
     renderer.setSize(W, H, false);
     composer.setSize(W, H);
     camera.aspect = W / H;
-    camera.fov = portrait ? 62 : 52;
+    baseFov = portrait ? 62 : 52; camera.fov = baseFov;
     ortho.left = 0; ortho.right = W; ortho.top = 0; ortho.bottom = -H; ortho.updateProjectionMatrix();
     film.uniforms.uAspect.value = W / H;
     film.uniforms.uRes.value.set(W * pr, H * pr);
+    finish.uniforms.uRes.value.set(W * pr, H * pr);
     const safeTop = 8, gut = 16;
     fm = frameMetrics(W, H, null, compact);
     void safeTop;
     if (compact) sumPlate.place(fm.x0 + fm.ct + 4, fm.y0 + fm.lift + 2, fm.x1 - fm.x0 - 2 * fm.ct - 8, 40);
-    else if (fm.phone) sumPlate.place(fm.x0 + 4, fm.y0 + 8, fm.x1 - fm.x0 - 8, 62);
-    else sumPlate.place(fm.x0 + fm.ct + 150, fm.y0 + fm.lift + 4, fm.x1 - fm.x0 - 2 * fm.ct - 300, 72);
+    else if (fm.phone) sumPlate.place(fm.x0 + 4, fm.y0 + 6, fm.x1 - fm.x0 - 8, 52);
+    else sumPlate.place(fm.x0 + fm.ct + 150, fm.y0 + fm.lift + 3, fm.x1 - fm.x0 - 2 * fm.ct - 300, 58);
     drawSummary();
     updateFrame();
-    handlePlate.place(fm.x1 - 19, H * 0.42, 18, 88); drawHandle();
+    handlePlate.place(fm.x1 - 15, H * 0.42, 14, 76); drawHandle();
     feedPlate.place(W, fm.y0, feedWidth(), fm.y1 - fm.y0); drawFeed();
     panelPlate.place(fm.strip.x + 1, fm.strip.y + 1, fm.strip.w - 2, fm.strip.h - 2);
     drawPanel();
@@ -2614,7 +2775,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     kick();
     if (gesture.kind === "feed") { feed.scroll = gesture.s0 - (e.clientY - gesture.y); if (e.clientX - gesture.x > 60) { toggleFeed(false); gesture = null; } else drawFeed(); return; }
     if (gesture.kind === "edge") { if (gesture.x - e.clientX > 40) { toggleFeed(true); gesture = null; } return; }
-    if (gesture.kind === "rotate" && pointers.size === 1) { rig.vyaw -= dx * 0.0022; rig.vpitch += dy * 0.0018; }
+    if (gesture.kind === "rotate" && pointers.size === 1) { const k = SET.camera.sensitivity * (SET.camera.invert ? -1 : 1); rig.vyaw -= dx * 0.0022 * k; rig.vpitch += dy * 0.0018 * k; }
     else if (gesture.kind === "scroll") { slate.scroll = gesture.s0 + (slateAnchorBottom() ? (e.clientY - gesture.y) : -(e.clientY - gesture.y)); drawSlate(); }
     else if (gesture.kind === "pinch" && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
@@ -2650,16 +2811,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (feed.open && hit?.plate !== feedPlate && hit?.plate !== handlePlate) { toggleFeed(false); return; }
     if (hit) {
       if (hit.plate === panelPlate) wakePanel();
-      if (hit.spot?.fn === "panel:refresh") { blip(880); try { await act("refresh"); } catch (err) { notice = err.message; } return; }
-      if (hit.spot?.fn === "panel:interval") { blip(520); const cur = store.board?.intervalSec ?? 15; const nx = INTERVALS.find((v) => v > cur) ?? INTERVALS[0]; try { await act("config", { intervalSec: nx }); } catch (err) { notice = err.message; } drawPanel(); return; }
-      if (hit.spot?.fn === "panel:view") { blip(600); if (view.level === "sky") { const first = [...companyObjs.keys()][0]; if (first) goCompany(first); } else if (view.level === "company") toggleList(true); else goSky(); drawPanel(); return; }
-      if (hit.spot?.fn === "panel:sound") { snd.startAudio(); snd.setMuted(!snd.soundState().muted); snd.play("click"); drawPanel(); return; }
-      if (hit.spot?.fn === "panel:vol") { snd.startAudio(); const v = snd.soundState().volume; snd.setVolume(VOLS[(VOLS.findIndex((x) => x >= v - 0.01) + 1) % VOLS.length]); snd.play("click"); drawPanel(); return; }
-      if (hit.spot?.fn === "panel:project") { store.emit("openConnect"); return; }
-      if (hit.spot?.fn === "panel:work") { openWorkPanel(view.company); return; }
-      if (hit.spot?.fn === "panel:help") { store.emit("openHelp"); return; }
-      if (hit.spot?.fn === "panel:float") { blip(600); floater_.toggle(); return; }
-      if (hit.spot?.fn === "panel:pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
+      if (hit.spot?.fn?.startsWith("panel:")) { await stripAction(hit.spot.fn.slice(6)); return; }
       if (typeof hit.spot?.fn === "function") { hit.spot.fn(); return; }
       if (hit.plate === slate.plate) return; // tap on the glass with nothing there
     }
@@ -2674,6 +2826,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (pk.kind === "company") { if (view.level === "company" && view.company === pk.id && store.mode !== "demo") openWorkPanel(pk.id); else goCompany(pk.id); }
     else if (pk.kind === "agent") goAgent(pk.id);
     else if (pk.kind === "issue") goIssue(pk.id);
+    else if (pk.kind === "station") goStation();
   }
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", (e) => { pointers.delete(e.pointerId); gesture = null; clearTimeout(cornerTimer); clearTimeout(longPressMoon); });
@@ -2684,11 +2837,136 @@ export async function startScene({ canvas, kbd, reduced }) {
     cancelFlight(); cs.zoom = true; rig.goal.dist = Math.max(3, Math.min(140, rig.goal.dist * Math.exp(e.deltaY * 0.0012)));
     zoomLevels();
   }, { passive: false });
+  // The bottom strip's actions, shared by taps, the keyboard toolbar and the settings panel.
+  async function stripAction(id) {
+    if (id === "refresh") { blip(880); try { await act("refresh"); } catch (err) { notice = err.message; } return; }
+    if (id === "interval") { blip(520); const cur = store.board?.intervalSec ?? 15; const nx = INTERVALS.find((v) => v > cur) ?? INTERVALS[0]; try { await act("config", { intervalSec: nx }); } catch (err) { notice = err.message; } drawPanel(); return; }
+    if (id === "view") { blip(600); if (view.level === "sky") { const first = [...companyObjs.keys()][0]; if (first) goCompany(first); } else if (view.level === "company") toggleList(true); else goSky(); drawPanel(); return; }
+    if (id === "sound") { snd.startAudio(); snd.setMuted(!snd.soundState().muted); snd.play("click"); drawPanel(); return; }
+    if (id === "vol") { snd.startAudio(); const v = snd.soundState().volume; snd.setVolume(VOLS[(VOLS.findIndex((x) => x >= v - 0.01) + 1) % VOLS.length]); snd.play("click"); drawPanel(); return; }
+    if (id === "project") { store.emit("openConnect"); return; }
+    if (id === "work") { openWorkPanel(view.company); return; }
+    if (id === "help") { store.emit("openHelp"); return; }
+    if (id === "float") { blip(600); floater_.toggle(); return; }
+    if (id === "pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
+    if (id === "settings") { openSettings(); return; }
+    if (id === "blur") { VIS.blur = !VIS.blur; saveSettings(); drawPanel(); return; }
+  }
+
+  // ---------------- keyboard: full control without a pointer ----------------
+  // Keys go to the scene unless a text field, a panel or the list view has focus. Held camera keys feed the same
+  // damped camera (eased start and stop); everything else maps to the same actions as a tap.
+  const held = new Set();
+  let kbSel = null, kbUsedAt = -1e9;
+  const live = (() => { const d = host.doc.createElement("div"); d.className = "vh"; d.setAttribute("aria-live", "polite"); d.setAttribute("role", "status"); host.doc.body.appendChild(d); return d; })();
+  function announce(t) { live.textContent = ""; setTimeout(() => { live.textContent = t; }, 30); }
+  function kbTargets() {
+    const out = [...companyObjs.keys()].map((id) => ({ kind: "company", id }));
+    const co = view.company;
+    if (co) {
+      for (const ao of agentObjs.values()) if (ao.company === co) out.push({ kind: "agent", id: ao.id });
+      for (const io of issueObjs.values()) if (io.data.company === co) out.push({ kind: "issue", id: io.id });
+    }
+    out.push({ kind: "station", id: "station" });
+    return out;
+  }
+  function describe(t) {
+    if (!t) return "";
+    if (t.kind === "company") { const c = (store.board?.companies ?? []).find((x) => x.prefix === t.id); return `${c?.name ?? t.id}, planet, ${companyProgress(c) ?? "no"} percent overall`; }
+    if (t.kind === "agent") { const ao = agentObjs.get(t.id); return `${ao?.data?.name ?? "agent"}, moon, ${ao?.data?.live ? "working" : "idle"}`; }
+    if (t.kind === "issue") { const io = issueObjs.get(t.id); return `${io?.data.identifier} ${io?.data.title ?? ""}, ${io?.question ? "waiting on you" : (io?.status ?? "").replace("_", " ")}${io?.arcPct >= 0 ? `, ${io.arcPct} percent` : ""}`; }
+    return "Settings station";
+  }
+  function selectKb(t) { kbSel = t; hoverId = t?.id ?? null; if (t) announce(describe(t)); kick(); }
+  function openKb(t) {
+    if (!t) return;
+    if (t.kind === "company") goCompany(t.id); else if (t.kind === "agent") goAgent(t.id); else if (t.kind === "issue") goIssue(t.id); else openSettings();
+  }
+  function stepPlanet(d) {
+    const ks = [...companyObjs.keys()]; if (!ks.length) return;
+    const i = ks.indexOf(view.company ?? kbSel?.id); const n = ks[(i + d + ks.length) % ks.length];
+    selectKb({ kind: "company", id: n }); goCompany(n);
+  }
+  function nextNeedingYou() { const qs = allQuestions(); if (!qs.length) { readout("• Nothing waiting on you", "0"); announce("Nothing waiting on you"); return; } const q = qs[(qs.findIndex((x) => x.issue.id === view.issue) + 1) % qs.length]; goIssue(q.issue.id); announce(`${q.issue.identifier}, waiting on you`); }
+  const sc = shortcutsOverlay(host.doc);
+  const typing = (e) => {
+    const t = e.target, tag = t?.tagName;
+    if (t === kbd || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return true;
+    if (!toggleListIsClosed()) return true;
+    if (t?.closest?.("[role=dialog]")) return true;                           // panels keep their own keys
+    return false;
+  };
+  const toggleListIsClosed = () => { const l = host.doc.getElementById("list"); return !l || l.hidden; };
   hostOn("keydown", (e) => {
-    if (kbd.ownerDocument.activeElement === kbd) return;
-    if (e.key === "Escape") { if (feed.open) toggleFeed(false); else backOut(); }
-    if (e.key === "l" || e.key === "L") toggleList(true);
+    if (e.defaultPrevented || host.doc.querySelector(".intro") || settingsPanel) return; // the intro and panels own their keys
+    if (e.target === kbd && e.key === "Escape") { stopEditing(); drawSlate(); canvas.focus?.({ preventScroll: true }); return; }
+    if (typing(e)) return;
+    const k = e.key, onButton = e.target?.tagName === "BUTTON" || e.target?.tagName === "A";
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "a", "d", "w", "s", "A", "D", "W", "+", "=", "-", "_"].includes(k) && !(e.metaKey || e.ctrlKey)) {
+      held.add(k.length === 1 ? k.toLowerCase() : k); kbUsedAt = performance.now(); e.preventDefault(); kick(); return;
+    }
+    if (k === "Escape" || (k === "Backspace" && !onButton)) { e.preventDefault(); if (sc.isOpen) sc.close(); else if (feed.open) toggleFeed(false); else backOut(); return; }
+    if (k === "Tab") {
+      if (onButton) return;                                                   // inside the strip toolbar: normal focus order
+      const ts = kbTargets(); const i = kbSel ? ts.findIndex((t) => t.kind === kbSel.kind && t.id === kbSel.id) : -1;
+      const j = i + (e.shiftKey ? -1 : 1);
+      if (j >= ts.length || (j < 0 && i >= 0)) { selectKb(null); return; }     // past the last item: on to the strip buttons
+      e.preventDefault(); selectKb(ts[(j + ts.length) % ts.length]); return;
+    }
+    if (k === "Enter" && !onButton) { e.preventDefault(); openKb(kbSel ?? kbTargets()[0]); return; }
+    if (k === "f" || k === "F") { openKb(kbSel); return; }
+    if (k === "0" || k === "Home") { goSky(); announce("Overview"); return; }
+    if (k === "[" || k === "PageUp") { e.preventDefault(); stepPlanet(-1); return; }
+    if (k === "]" || k === "PageDown") { e.preventDefault(); stepPlanet(1); return; }
+    if (k === "n" || k === "N" || (k === " " && !onButton)) { e.preventDefault(); nextNeedingYou(); return; }
+    if (k === "i" || k === "I") { toggleFeed(); return; }
+    if (k === "," ) { openSettings(); return; }
+    if (k === "?") { e.preventDefault(); sc.open(); return; }
+    if (k === "l" || k === "L") toggleList(true);
   });
+  hostOn("keyup", (e) => { held.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
+  hostOn("blur", () => held.clear());
+  // Held keys → camera velocity, eased in and out (same damping as a drag). Shift doubles the rate.
+  const kbVel = { yaw: 0, pitch: 0, pan: new THREE.Vector3(), zoom: 0 };
+  function keyMotion(dt) {
+    const has = (...a) => a.some((x) => held.has(x));
+    const fast = held.has("Shift") ? 2 : 1;
+    const ax = (has("ArrowRight", "d") ? 1 : 0) - (has("ArrowLeft", "a") ? 1 : 0);
+    const ay = (has("ArrowUp", "w") ? 1 : 0) - (has("ArrowDown", "s") ? 1 : 0);
+    const az = (has("-", "_") ? 1 : 0) - (has("+", "=") ? 1 : 0);
+    const k = easeK(dt, 4);
+    const pan = keyAlt;
+    kbVel.yaw += ((pan ? 0 : ax * 0.55 * fast) - kbVel.yaw) * k;          // rad/s
+    kbVel.pitch += ((pan ? 0 : ay * 0.4 * fast) - kbVel.pitch) * k;
+    kbVel.zoom += (az * 0.7 * fast - kbVel.zoom) * k;                        // log-distance per second
+    const right = v3n.set(1, 0, 0).applyQuaternion(camera.quaternion), up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    kbVel.pan.lerp(right.multiplyScalar(pan ? ax : 0).addScaledVector(up, pan ? ay : 0).multiplyScalar(rig.dist * 0.35 * fast), k);
+    if (Math.abs(kbVel.yaw) + Math.abs(kbVel.pitch) + Math.abs(kbVel.zoom) + kbVel.pan.length() < 1e-4) return false;
+    rig.yaw = Math.max(-0.9, Math.min(0.9, rig.yaw + kbVel.yaw * dt)); rig.pitch = Math.max(-0.6, Math.min(0.6, rig.pitch + kbVel.pitch * dt));
+    if (Math.abs(kbVel.zoom) > 1e-4) { cancelFlight(); cs.zoom = true; rig.goal.dist = Math.max(3, Math.min(140, rig.goal.dist * Math.exp(kbVel.zoom * dt))); if (Math.abs(az) > 0) zoomLevels(); }
+    if (kbVel.pan.lengthSq() > 1e-8) { cancelFlight(); rig.follow = null; rig.goal.target.addScaledVector(kbVel.pan, dt); }
+    kbUsedAt = performance.now();
+    return true;
+  }
+  let keyAlt = false;
+  hostOn("keydown", (e) => { keyAlt = e.altKey; if (e.key === "Shift") held.add("Shift"); }, true);
+  hostOn("keyup", (e) => { keyAlt = e.altKey; if (e.key === "Shift") held.delete("Shift"); }, true);
+
+  // The bottom strip as real buttons (screen readers, Tab): a visually hidden toolbar mirroring the canvas strip;
+  // the focused item is outlined on the strip itself.
+  let stripFocus = null;
+  const toolbar = (() => {
+    const t = host.doc.createElement("div"); t.setAttribute("role", "toolbar"); t.setAttribute("aria-label", "Board controls");
+    const items = [["refresh", "Refresh now"], ["interval", "Change refresh interval"], ["view", "Change view"], ["sound", "Sound on or off"], ["vol", "Change volume"], ["blur", "Motion blur on or off"], ["float", "Float window"], ["project", "Add a project"], ["settings", "Open settings"], ["help", "Help"]];
+    for (const [id, label] of items) {
+      const b = host.doc.createElement("button"); b.type = "button"; b.className = "vh"; b.textContent = label; b.setAttribute("aria-label", label);
+      b.addEventListener("focus", () => { stripFocus = id; wakePanel(); }); b.addEventListener("blur", () => { stripFocus = null; drawPanel(); });
+      b.addEventListener("click", () => stripAction(id));
+      t.appendChild(b);
+    }
+    host.doc.body.appendChild(t); return t;
+  })();
+  void toolbar;
 
   // Subtle parallax: mouse position on desktop, device tilt on phones (iOS asks after a tap).
   if (!reduced) {
@@ -2727,7 +3005,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // ---------------- render loop ----------------
   const perf = { frames: 0, ms: 0, avg: 0, tier: tier.name, gpu: tier.gpu };
   window.__observatory = perf;
-  if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { queueFx, meteor, comet, persist: () => persist, flights: () => flights, rfx, fire, explode, shoot, viewPoint, sendDrone, incomingPod, ufoArrive, companies: () => companyObjs, agents: () => agentObjs, hostiles: () => hostiles, goCompany, glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
+  if (new URLSearchParams(location.search).has("debug")) window.__obsDebug = { world, composer, bloom, finish, film, stepPlanet, station, goStation, openSettings, VIS, mblur, sunLight, goAgent, fleet, goSky, THREE, pulse, syncSky, issues: () => issueObjs, queueFx, meteor, comet, persist: () => persist, flights: () => flights, rfx, fire, explode, shoot, viewPoint, sendDrone, incomingPod, ufoArrive, companies: () => companyObjs, agents: () => agentObjs, hostiles: () => hostiles, goCompany, glass, ortho, renderer, camera, sumPlate: () => sumPlate, panelPlate: () => panelPlate, bracketPlate: () => bracketPlate, slate, rig, view: () => view };
   function kick() { activeUntil = Math.max(activeUntil, performance.now() + 1500); if (!rafId && !paused && !isHidden()) rafId = raf(frame); }
   const resume = () => { if (paused) return; cancelRaf(rafId); rafId = 0; last = performance.now(); dirty = true; rafId = raf(frame); };
   document.addEventListener("visibilitychange", resume);
@@ -2778,6 +3056,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const dt = Math.min(MOTION.maxDt, (now - last) / 1000); // clamped: a dropped frame or tab switch never jumps
     last = now;
     clock += dt;
+    frameDt = dt;
 
     // Start queued effects without crowding the sky.
     // At most one big and two small effects at once, so the sky never gets busy.
@@ -2790,21 +3069,22 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     for (let i = running.length - 1; i >= 0; i--) {
       const r = running[i]; r.t += dt;
-      const k = Math.min(1, r.t / (r.dur * MOTION.effects));
+      const k = Math.min(1, r.t / (r.dur * MOTION.effects / tempo()));
       r.update(k, dt);
       if (k >= 1) { r.end?.(); running.splice(i, 1); }
     }
-    if (!reduced && !loneUfo && now - lastEventAt > 60000 && fxQueue.length === 0 && running.length === 0) {
-      lastEventAt = now; loneUfo = { g: makeUfo(), t: 0 }; loneUfo.g.scale.setScalar(1.4); world.add(loneUfo.g);
+    if (!reduced && SET.visual.density > 0 && !loneUfo && now - lastEventAt > 60000 / SET.visual.density && fxQueue.length === 0 && running.length === 0) {
+      lastEventAt = now; startLoneUfo();
     }
 
     // Camera: inertial approach to the goal, plus drag inertia.
     if (rig.follow) rig.goal.target.copy(rig.follow());
     const before = rig.target.clone();
     if (flight.on) {
-      const fk = Math.min(1, (now - flight.t0) / 1000 / flight.dur), e = flight.enter ? enterEase(fk) : smoother(fk);
-      rig.target.lerpVectors(flight.fromT, rig.goal.target, e);
-      rig.dist = Math.exp(Math.log(flight.fromD) + (Math.log(Math.max(0.5, rig.goal.dist)) - Math.log(flight.fromD)) * e);
+      const fk = Math.min(1, (now - flight.t0) / 1000 / flight.dur), e = flight.enter ? enterEase(fk) : easeCubic(fk);
+      const carry = fk * (1 - fk) * (1 - fk) * flight.dur;               // Hermite: initial velocity, fading to zero
+      rig.target.lerpVectors(flight.fromT, rig.goal.target, e).addScaledVector(flight.v0T, carry);
+      rig.dist = Math.exp(Math.log(flight.fromD) + (Math.log(Math.max(0.5, rig.goal.dist)) - Math.log(flight.fromD)) * e + flight.v0D * carry + flight.lift * Math.sin(Math.PI * e));
       // Track velocity so an interruption (or the end of the path) hands over to the springs smoothly.
       cs.vel.subVectors(rig.target, before).divideScalar(Math.max(dt, 1e-3));
       const nd = Math.log(Math.max(0.5, rig.dist)); cs.dV = (nd - cs.d) / Math.max(dt, 1e-3); cs.d = nd;
@@ -2812,7 +3092,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     } else if (reduced) { rig.target.copy(rig.goal.target); rig.dist = rig.goal.dist; syncSpring(); }
     else {
       if (!cs.init) syncSpring();
-      const w2 = 7.69 / (cs.zoom ? MOTION.zoom : MOTION.camera), w1 = w2 * 1.5;
+      const w2 = cs.zoom ? 7.69 / MOTION.zoom : MOTION.freeDamp * tempo(), w1 = w2 * 1.5; // v1 damps free motion at rate 5
       const gd = Math.log(Math.max(0.5, rig.goal.dist));
       for (const ax of ["x", "y", "z"]) {
         [cs.lead[ax], cs.leadV[ax]] = spring(cs.lead[ax], cs.leadV[ax], rig.goal.target[ax], rig.follow ? w1 * 2 : w1, dt);
@@ -2824,10 +3104,23 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     rig.yaw = Math.max(-0.9, Math.min(0.9, rig.yaw + rig.vyaw * dt * 60)); rig.pitch = Math.max(-0.6, Math.min(0.6, rig.pitch + rig.vpitch * dt * 60));
     rig.vyaw *= Math.exp(-dt * 6.3); rig.vpitch *= Math.exp(-dt * 6.3);
-    if (pointers.size === 0) { const r = Math.exp(-dt * 0.3); rig.yaw *= r; rig.pitch *= r; }
+    if (keyMotion(dt)) activeUntil = Math.max(activeUntil, now + 200);
+    if (pointers.size === 0 && now - kbUsedAt > 4000) { const r = Math.exp(-dt * 0.3); rig.yaw *= r; rig.pitch *= r; }
     const speed = before.distanceTo(rig.target) / Math.max(dt, 1e-3);
     rig.speed += (speed - rig.speed) * easeK(dt, 13);
     const warpAmt = reduced ? 0 : Math.min(1, Math.max(0, (rig.speed - 8) / 40));
+    // One speed signal (how fast the view changes) drives the FOV kick, motion blur, star streaks and the speed
+    // vignette. It builds with acceleration and fades on arrival; small adjustments and idle drift stay below it.
+    {
+      const sig = rig.speed / Math.max(1, rig.dist) + Math.abs(cs.dV) + Math.abs(rig.vyaw) * 40;
+      const goal = reduced ? 0 : THREE.MathUtils.clamp((sig - 0.18) / 1.1, 0, 1);
+      speedK += (goal - speedK) * easeK(dt, goal > speedK ? 3 : 1.6);
+    }
+    camera.fov = baseFov + (VIS.fovKick ? 5 * speedK * speedK : 0);
+    mblur.enabled = VIS.blur && !reduced && (speedK > 0.01 || flights.length > 0 || rfx.busy || hostiles.size > 0 || ufos.size > 0);
+    mblur.zoom = THREE.MathUtils.clamp(-cs.dV * 0.01, -0.012, 0.012) * speedK;
+    finish.uniforms.uSpeed.value = speedK; finish.uniforms.uTime.value = clock; finish.uniforms.uGrain.value = VIS.grain ? 0.09 : 0;
+    bloom.strength = 0.32 * VIS.bloom;
     // Parallax from the mouse (desktop) or device tilt (phones), eased.
     look.x += (look.tx - look.x) * Math.min(1, dt * 3); look.y += (look.ty - look.y) * Math.min(1, dt * 3);
     if (Math.abs(look.tx - look.x) > 0.0005 || Math.abs(look.ty - look.y) > 0.0005) activeUntil = Math.max(activeUntil, now + 100);
@@ -2845,8 +3138,9 @@ export async function startScene({ canvas, kbd, reduced }) {
       warpRealMat.uniforms.uOpacity.value = warpAmt * 1.1; warpReal.scale.z = warp.scale.z; warpReal.visible = warp.visible; warp.visible = false;
     }
     if (bokeh) {
-      bokeh.enabled = !compact && (warpAmt > 0.05 || rig.speed > 4); // depth of field is invisible in the small window
-      if (bokeh.enabled) { bokeh.uniforms.focus.value = rig.dist; bokeh.uniforms.aperture.value = 0.00008 * Math.min(1, rig.speed / 20); }
+      // Opt-in (settings): a gentle depth of field on still frames only; focus pulls smoothly to the camera target.
+      bokeh.enabled = VIS.dof && !compact && speedK < 0.05;
+      bokeh.uniforms.focus.value += (rig.dist - bokeh.uniforms.focus.value) * easeK(dt, 2);
     }
 
     // Sky.
@@ -2868,11 +3162,11 @@ export async function startScene({ canvas, kbd, reduced }) {
 
     const lvl = view.level;
     for (const co of companyObjs.values()) {
-      const target = lvl === "sky" ? 0.8 : co.prefix === view.company ? (fm.phone && lvl === "company" ? 0 : 0.5) : 0.3; // phones: the selection readout already names it
+      const target = labelGate(co.prefix === view.company || hoverId === co.prefix) * (lvl === "sky" ? 0.8 : co.prefix === view.company ? (fm.phone && lvl === "company" ? 0 : 0.5) : 0.3); // phones: the selection readout already names it
       co.label.material.opacity += (target - co.label.material.opacity) * easeK(dt, 7);
     }
     for (const co of companyObjs.values()) {
-      if (!reduced) { co.planet.rotation.y += dt * co.spin; const cl = co.planet.children[0]; if (cl?.userData.clouds) cl.rotation.y += dt * co.spin * 0.6; }
+      if (!reduced) { co.planet.rotation.y += dt * co.spin * tempo() * MOTION.spin; const cl = co.planet.children[0]; if (cl?.userData.clouds) cl.rotation.y += dt * co.spin * 0.6; }
       if (Math.abs(co.ringPct - co.ringShown) > 0.05) { co.ringShown += (co.ringPct - co.ringShown) * (reduced ? 1 : Math.min(1, dt * 2)); activeUntil = Math.max(activeUntil, now + 200); }
       co.ring.geometry.setDrawRange(0, Math.round(co.ringShown / 100 * 128) + (co.ringShown > 0 ? 1 : 0));
     }
@@ -2887,18 +3181,18 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
     for (const ao of agentObjs.values()) {
       const a = ao.data ?? {};
-      placeMoon(ao, clock);
+      placeMoon(ao);
       const flare = a.live ? 1 + (reduced ? 0 : 0.15 * Math.sin(clock * 2.2 + ao.h * 9)) : 1;
       ao.moon.material.emissiveIntensity = a.live ? 0.12 * flare : a.queued ? 0.04 : 0;
       ao.glow.material.opacity = a.live ? 0.12 * flare : 0;
       ao.glow.scale.setScalar(ao.size * 2.4);
-      const show = lvl !== "sky" && ao.company === view.company && (!focusMoon || ao.id === focusMoon || ao.id === view.agent) ? 0.95 : 0;
+      const show = labelGate(true) > 0 && lvl !== "sky" && ao.company === view.company && (!focusMoon || ao.id === focusMoon || ao.id === view.agent) ? 0.95 : 0;
       ao.label.material.opacity += (show - ao.label.material.opacity) * easeK(dt, 7);
-      ao.orbitLine.material.opacity = ao.company === view.company ? 0.45 : 0.22;
+      ao.orbitLine.material.opacity += ((ao.company === view.company ? 0.13 : 0.08) - ao.orbitLine.material.opacity) * easeK(dt, 3); // v1: 0.09
     }
     for (const io of issueObjs.values()) {
-      satellitePos(io, clock, io.sprite.position);
-      io.orbit.position.copy(io.center); io.arc.position.copy(io.center);
+      satellitePos(io, clock, io.sprite.position, dt);
+      { const o = io.orb; const qq = o.q.clone().multiply(XY.clone().invert()); io.orbit.position.copy(io.center).add(o.off); io.arc.position.copy(io.orbit.position); io.orbit.quaternion.copy(qq); io.arc.quaternion.copy(qq); io.orbit.scale.setScalar(o.r); io.arc.scale.setScalar(o.r); }
       io.label.position.copy(io.sprite.position).add(new THREE.Vector3(0, -0.5, 0));
       let col = io.baseColor;
       if (io.question && !seenQuestions.has(io.id)) {
@@ -2907,16 +3201,32 @@ export async function startScene({ canvas, kbd, reduced }) {
       } else if (io.question) col = new THREE.Color(1.0, 0.7, 0.32).multiplyScalar(1.2);
       io.sprite.material.color.copy(col);
       io.sprite.material.opacity = io.hidden ? 0 : 1;
+      { // the vessel: its reactor carries the status colour; the old glow point stays only until the hull loads
+        const sh = fleet.get(io.id);
+        if (sh) {
+          fleet.set(io.id, { pos: io.sprite.position, size: 0.24 + io.size * 0.3, status: io.question ? "question" : io.status, hot: hoverId === io.id || view.issue === io.id, sun: SUN, normal: v3n.set(0, 1, 0).applyQuaternion(io.orb.q), hidden: io.hidden, camPos: camera.position, pxWorld: 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / H }, dt);
+          io.sprite.visible = !sh.ready;
+        }
+      }
       io.sprite.scale.setScalar(io.size * (io.status === "blocked" ? 0.9 : 1.15));
       const near = (lvl === "agent" || lvl === "issue") && (io.hostAgent?.id === view.agent || io.id === view.issue) || (lvl === "company" && io.data.company === view.company && (!fm.phone || revealing));
-      io.label.material.opacity += ((near ? 0.9 : 0) - io.label.material.opacity) * easeK(dt, 7);
-      io.orbit.material.opacity = near ? 0.12 : 0.05;
-      io.arc.material.opacity = near ? 0.85 : 0.4;
+      io.label.material.opacity += ((near && labelGate(true) ? 0.9 : 0) - io.label.material.opacity) * easeK(dt, 7);
+      io.orbit.material.opacity += ((near ? 0.09 : 0.035) - io.orbit.material.opacity) * easeK(dt, 3);
+      io.arc.material.opacity += ((near ? 0.5 : 0.2) - io.arc.material.opacity) * easeK(dt, 3);
       // Progress arc grows smoothly to the latest estimate.
       const goal = Math.max(0, io.arcPct);
       if (Math.abs(goal - io.arcShown) > 0.05) { io.arcShown += (goal - io.arcShown) * (reduced ? 1 : Math.min(1, dt * 2.5)); activeUntil = Math.max(activeUntil, now + 200); }
       io.arc.geometry.setDrawRange(0, Math.round((io.arcShown / 100) * 96) + (io.arcShown > 0 ? 1 : 0));
     }
+    for (const [id, r] of retiring) {
+      r.t += dt; satellitePos(r.io, clock, r.io.sprite.position, dt);
+      fleet.set(id, { pos: r.io.sprite.position, size: 0.24 + r.io.size * 0.3, status: "done", hot: false, sun: SUN, normal: v3n.set(0, 1, 0).applyQuaternion(r.io.orb.q), hidden: false }, dt);
+      if (r.t > 2.5) { fleet.remove(id); retiring.delete(id); }
+    }
+    if (retiring.size) activeUntil = Math.max(activeUntil, now + 100);
+    station.group.position.copy(stationPos());
+    station.update(dt, { hover: hoverId === "station" || kbSel?.kind === "station", reduced, tempo: tempo() });
+    if (SET.camera.tour && !settingsPanel && now - lastInput > SET.camera.tourSec * 1000) { lastInput = now; stepPlanet(1); }
     updateUfos(dt, clock);
     updatePersistent(dt);
     updateProjects(dt);
@@ -2924,6 +3234,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     updateHostiles(dt);
     if (persist.size && !reduced) activeUntil = Math.max(activeUntil, now + 100);
     rfx.update(dt);
+    flares.update(dt);
     particles.update(dt);
 
     // Glass.
@@ -2970,11 +3281,12 @@ export async function startScene({ canvas, kbd, reduced }) {
     }
 
     // Render: full rate while something moves; a low idle rate keeps the stars alive.
-    const active = now < activeUntil || running.length > 0 || particles.alive > 0 || rfx.busy || floaters.length > 0 || pointers.size > 0 || flight.on || starStreak > 0.003 || Math.abs(rig.goal.dist - rig.dist) > 0.05 || rig.target.distanceTo(rig.goal.target) > 0.02 || [...ufos.values()].some((u) => u.state !== "hover") || !!loneUfo || film.uniforms.uPulse.value >= 0 || slate.editing || now < slate.animUntil || (slate.plate.visible && sinceOpen < 1);
-    const idleGap = 1000 / (tier.fpsIdle || 10); // idle rate per tier (60 desktop, 30 phones, 6 weak) so slow drift stays smooth
+    const active = now < activeUntil || running.length > 0 || particles.alive > 0 || rfx.busy || flares.busy || floaters.length > 0 || pointers.size > 0 || flight.on || starStreak > 0.003 || Math.abs(rig.goal.dist - rig.dist) > 0.05 || rig.target.distanceTo(rig.goal.target) > 0.02 || [...ufos.values()].some((u) => u.state !== "hover") || !!loneUfo || film.uniforms.uPulse.value >= 0 || slate.editing || now < slate.animUntil || (slate.plate.visible && sinceOpen < 1);
+    const idleGap = batterySaver ? 250 : 1000 / (tier.fpsIdle || 10); // idle rate per tier (60 desktop, 30 phones, 6 weak); 4 fps in battery saver
     if (active || dirty || now - lastRender >= idleGap) {
       const t0 = performance.now();
       composer.render(dt);
+      mblur.remember();
       renderer.autoClear = false;
       renderer.clearDepth();
       renderer.render(glass, ortho);
@@ -2998,6 +3310,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   drawTicker();
   if (store.mode === "remote" && store.link.state !== "connected") openSlate("link", true);
   if (store.mode === "lost") { notice = store.link.error || "Open this page from the QR code on your Mac's board."; openSlate("notice", true); }
+  applySettings();
   goSky();
   if (store.mode === "remote" && store.link.state !== "connected") openSlate("link", true);
   console.info(`[observatory] tier=${tier.name} dpr=${dpr} gpu=${tier.gpu}`);

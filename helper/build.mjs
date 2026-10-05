@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"]).toString().trim();
 process.chdir(root);
-const FILES = ["server.mjs", "chat.mjs", "helper.mjs", "access.mjs", "controls.mjs", "service.mjs", "setup.mjs", "version.mjs"];
+const FILES = ["server.mjs", "chat.mjs", "helper.mjs", "access.mjs", "controls.mjs", "clipboard.mjs", "service.mjs", "setup.mjs", "version.mjs"];
 const VERSION = /VERSION = "([^"]+)"/.exec(readFileSync("helper/version.mjs", "utf8"))[1];
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 const L = "helper/launchers";

@@ -1,18 +1,19 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "files": {
-    "server.mjs": "bd34c9171c9ce056551d711b7bcceee7ed4f4fe5febdaef54bdb1161e856aada",
+    "server.mjs": "d45c3a3043b33db19e2326f9d3eaf83a7e4fe0d2a8ba7ddae666462ed5c764f5",
     "chat.mjs": "1694d7c13c677c98cc8e779c800f18aea34ecff9483ee5d7f06d0f9370f2287d",
     "helper.mjs": "cd39cc0e34017e3d0739c2237fef5af031375cc44b2e6a477e0ec7bcbcc472fc",
     "access.mjs": "be3f132ba8b25ca55499de9a01fdf38c9bf4eb13a7b7b746cb9d151319925efc",
-    "controls.mjs": "57dd4993187117943e12eb3cabe61bd5892110c0d828ec40cda30990db4db39b",
-    "service.mjs": "e20ee48281083dc614f7342de4be3fa211111bcd20897821b9bfc8c22ee56dd0",
+    "controls.mjs": "9871afeee3ec266786c90c1c339491c5ad14bb001e3ed6686293362b2a5bc905",
+    "clipboard.mjs": "4828bc785a0f475115df4756d74c6a716392004f1cb8020ea03febc41cb71f9e",
+    "service.mjs": "b621c70c5389c7209f79b487bdb7806275f5e8877d61cf14d5eefcaae5914e08",
     "setup.mjs": "bee569152609c71074c4c1b6bfe2b217dfdd2bfce527b21ec6d719766323a81d",
-    "version.mjs": "2920dfbb81e0602a0f50c9f7bd8b77f7e1910b41b21eb29baf982733b0ac0bd8"
+    "version.mjs": "6b1da38b303f2433fcae9b7637735ac0398cd4c49ed87453c11167d51d0ac274"
   },
   "downloads": {
-    "Orbit-mac.zip": "309515db4c4d4eba0100b16d9cf0457ad7ec45736e84e180422a0931b90a812f",
-    "Orbit-windows.zip": "ac9f048dee43b1f6255f6ced7300f8de774791f5616f518fb952d066902965bd",
-    "Orbit-linux.tar.gz": "d6293c371bf07e10de496ed10f36ec7efa6ab06e0369c1691b51db9d2816ce57"
+    "Orbit-mac.zip": "864c3cca478e7819a1fba5c862c590cb85d567cd03776a271d9bb073cae23653",
+    "Orbit-windows.zip": "5a56cdd2eb0e600bcafef1237e1dd3f58b2e62547b50aecb4464c22970149abb",
+    "Orbit-linux.tar.gz": "a0026387ff6768a3bd73cd0ebb1487ab11f0b8eb6aa4a51bc4c7a9fee814e746"
   }
 }

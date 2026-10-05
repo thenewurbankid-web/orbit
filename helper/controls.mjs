@@ -78,7 +78,10 @@ export function createControls({ port, here, dataDir, version, site, paperclipUp
     },
     async "/api/helper/update"(b) {
       const l = await latest();
-      const available = newer(l.version, version);
+      // Also "available" when a helper file is missing here (an older copy updated without it).
+      const missing = [];
+      for (const n of HELPER_FILES) if (l.files?.[n] && !(await stat(join(here, n)).then(() => true, () => false))) missing.push(n);
+      const available = newer(l.version, version) || missing.length > 0;
       if (!b.apply) return { current: version, latest: l.version, available, notes: l.notes ?? null };
       if (!available) return { ok: true, current: version, latest: l.version, available: false };
       if (!await installed()) throw fail(400, "This copy of Orbit was started by hand; update it where it came from.");

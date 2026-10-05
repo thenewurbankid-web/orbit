@@ -23,16 +23,16 @@ export function safeInsets() {
 export function frameMetrics(W, H, open = null, compact = false) {
   const phone = W < 640 && !compact;
   const sa = open || compact ? { t: 0, r: 0, b: 0, l: 0 } : safeInsets();
-  const metal = compact ? 5 : phone ? 6 : 13, lip = compact || phone ? 2 : 3;     // frame metal + bright lip
-  const strip = compact ? 20 : phone ? 30 : 28;                          // console strip height (phones: a comfortable touch target)
+  const metal = compact ? 4 : phone ? 4 : 8, lip = compact || phone ? 1.5 : 2;    // a slim machined bezel (≈35 % thinner than before)
+  const strip = compact ? 18 : phone ? 26 : 22;                          // console strip height (phones: still a comfortable touch target)
   const x0 = open ? open.x0 : metal + lip + sa.l, x1 = open ? open.x1 : W - metal - lip - sa.r;
-  const y0 = open ? open.y0 : metal + lip + sa.t, y1 = open ? open.y1 : H - strip - metal - lip - (phone || compact ? 4 : 6) - sa.b;
+  const y0 = open ? open.y0 : metal + lip + sa.t, y1 = open ? open.y1 : H - strip - metal - lip - (phone || compact ? 3 : 4) - sa.b;
   const scale = (x1 - x0) / Math.max(1, W - 2 * (metal + lip));
-  const ct = Math.round((phone ? 10 : compact ? Math.min(18, Math.max(10, W * 0.025)) : Math.min(56, Math.max(28, (W - 2 * (metal + lip)) * 0.032))) * scale); // top corner cut
+  const ct = Math.round((phone ? 8 : compact ? Math.min(14, Math.max(8, W * 0.02)) : Math.min(38, Math.max(20, (W - 2 * (metal + lip)) * 0.022))) * scale); // top corner cut
   const cb = Math.round(ct * 0.6);                                                                            // bottom corner cut
-  const lift = Math.max(2, Math.round((phone || compact ? 3 : 5) * scale));                                              // centre steps
+  const lift = Math.max(1.5, Math.round((phone || compact ? 2 : 3) * scale));                                              // centre steps
   const nx0 = Math.round(x0 + (x1 - x0) * 0.36), nx1 = Math.round(x0 + (x1 - x0) * 0.64);
-  const sy = y1 + Math.round((metal + lip) * scale) + 4;
+  const sy = y1 + Math.round((metal + lip) * scale) + 3;
   const st = { x: x0 + cb, y: sy, w: x1 - x0 - 2 * cb, h: Math.max(10, Math.round(strip * Math.min(1, scale))) };
   return { phone, compact, metal: metal * Math.min(1.6, scale), lip, side: metal + lip, x0, x1, y0, y1, ct, cb, lift, nx0, nx1, W, H, strip: st };
 }
@@ -51,7 +51,20 @@ export function openingPts(m, d = 0) {
     [x0 + cb - k, yB], [x0 - d, yB - cb + k],
   ];
 }
-const P = (pts) => "M" + pts.map((p) => p[0].toFixed(2) + " " + p[1].toFixed(2)).join("L") + "Z";
+const P = (pts, r = 7) => {
+  // Every vertex is filleted (a quadratic through the corner, radius capped by the adjacent edges), so the
+  // outline is one smooth, continuous curve: no hard corners, crisp at any pixel ratio.
+  const n = pts.length, f = (v) => v.toFixed(2);
+  const cut = pts.map((p, i) => {
+    const a = pts[(i - 1 + n) % n], b = pts[(i + 1) % n];
+    const la = Math.hypot(p[0] - a[0], p[1] - a[1]) || 1, lb = Math.hypot(b[0] - p[0], b[1] - p[1]) || 1;
+    const k = Math.min(r, la * 0.45, lb * 0.45);
+    return [[p[0] + (a[0] - p[0]) * k / la, p[1] + (a[1] - p[1]) * k / la], p, [p[0] + (b[0] - p[0]) * k / lb, p[1] + (b[1] - p[1]) * k / lb]];
+  });
+  let d = `M${f(cut[0][2][0])} ${f(cut[0][2][1])}`;
+  for (let i = 1; i <= n; i++) { const c = cut[i % n]; d += `L${f(c[0][0])} ${f(c[0][1])}Q${f(c[1][0])} ${f(c[1][1])} ${f(c[2][0])} ${f(c[2][1])}`; }
+  return d + "Z";
+};
 
 function el(tag, attrs = {}, parent) {
   const e = document.createElementNS(NS, tag);
@@ -61,9 +74,12 @@ function el(tag, attrs = {}, parent) {
 }
 
 export function createFrame(host) {
-  let glassGrad = null, glare = { x: 0, y: 0 };
+  let glassGrad = null, specGrad = null, glare = { x: 0, y: 0 };
   // Slide the glass gloss with device tilt or pointer (-1..1 each), so it reads as a real reflection.
-  function applyGlare() { if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.04).toFixed(3)} ${(glare.y * 0.03).toFixed(3)})`); }
+  function applyGlare() {
+    if (glassGrad) glassGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.04).toFixed(3)} ${(glare.y * 0.03).toFixed(3)})`);
+    if (specGrad) specGrad.setAttribute("gradientTransform", `translate(${(glare.x * 0.06).toFixed(3)} ${(glare.y * 0.05).toFixed(3)})`);
+  }
   const svg = el("svg", { "aria-hidden": "true", "shape-rendering": "geometricPrecision", "data-float": "" });
   Object.assign(svg.style, { position: "fixed", inset: "0", width: "100vw", height: "100%", pointerEvents: "none", zIndex: "2" });
   host.appendChild(svg);
@@ -85,17 +101,21 @@ export function createFrame(host) {
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     const m = frameMetrics(W, H, override, compact);
     const defs = el("defs", {}, svg);
-    // Real brushed, worn steel (ambientCG Metal011, CC0; see assets/fx/CREDITS.md), tiled and blended over the
-    // dark body so it keeps the frame's tone. Phones get the 256 px tile.
-    const T = m.phone || m.compact ? 192 : 320;
-    const pat = el("pattern", { id: "obs-steel", width: T, height: T, patternUnits: "userSpaceOnUse" }, defs);
-    el("image", { href: `assets/fx/steel${m.phone || m.compact ? "-sm" : ""}.jpg`, width: T, height: T, preserveAspectRatio: "none" }, pat);
     const lx = 0.5 - light[0] * 0.5, ly = 0.5 - light[1] * 0.5;
-    // Clean metal: one lit side, one shadow side, few mid greys.
+    // Dark gunmetal body: one lit side, one shadow side.
     const body = el("linearGradient", { id: "obs-body", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
-    el("stop", { offset: 0, "stop-color": "#24272b" }, body); el("stop", { offset: 0.5, "stop-color": "#1c1f22" }, body); el("stop", { offset: 1, "stop-color": "#141619" }, body);
+    el("stop", { offset: 0, "stop-color": "#23262a" }, body); el("stop", { offset: 0.5, "stop-color": "#1b1e21" }, body); el("stop", { offset: 1, "stop-color": "#131517" }, body);
+    // Soft bevel: one continuous gradient across the whole ring (no per-edge facets), lit toward the light,
+    // falling into shadow on the far side; it reads as a rounded, machined surface.
+    const bev = el("linearGradient", { id: "obs-bevel", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
+    el("stop", { offset: 0, "stop-color": "rgba(200,210,220,0.10)" }, bev); el("stop", { offset: 0.45, "stop-color": "rgba(120,128,136,0.03)" }, bev); el("stop", { offset: 1, "stop-color": "rgba(0,0,0,0.38)" }, bev);
+    // Chamfered inner edge (the lip): brighter, finer steel.
     const lipG = el("linearGradient", { id: "obs-lip", x1: lx, y1: ly, x2: 1 - lx, y2: 1 - ly }, defs);
-    el("stop", { offset: 0, "stop-color": "#5b6168" }, lipG); el("stop", { offset: 1, "stop-color": "#33383d" }, lipG);
+    el("stop", { offset: 0, "stop-color": "#646a72" }, lipG); el("stop", { offset: 0.5, "stop-color": "#41464c" }, lipG); el("stop", { offset: 1, "stop-color": "#2a2e33" }, lipG);
+    // A very fine specular line along the inner edge; its hot spot slides with the glare (tilt / pointer).
+    const spec = el("linearGradient", { id: "obs-spec", x1: 0, y1: 0, x2: 1, y2: 1 }, defs);
+    el("stop", { offset: 0, "stop-color": "rgba(235,242,250,0.55)" }, spec); el("stop", { offset: 0.3, "stop-color": "rgba(235,242,250,0.12)" }, spec); el("stop", { offset: 0.7, "stop-color": "rgba(0,0,0,0.45)" }, spec); el("stop", { offset: 1, "stop-color": "rgba(0,0,0,0.6)" }, spec);
+    specGrad = spec;
     // Glass gloss: one soft highlight in the top-left corner only, very subtle; it drifts a little with tilt.
     const glassG = el("radialGradient", { id: "obs-glass", cx: 0.06, cy: 0.02, r: 0.42, gradientUnits: "objectBoundingBox" }, defs);
     el("stop", { offset: 0, "stop-color": "rgba(225,240,252,0.045)" }, glassG); el("stop", { offset: 0.45, "stop-color": "rgba(225,240,252,0.015)" }, glassG); el("stop", { offset: 1, "stop-color": "rgba(255,255,255,0)" }, glassG);
@@ -103,36 +123,26 @@ export function createFrame(host) {
     const edgeG = el("radialGradient", { id: "obs-edge", cx: 0.5, cy: 0.5, r: 0.75 }, defs);
     el("stop", { offset: 0.75, "stop-color": "rgba(0,0,0,0)" }, edgeG); el("stop", { offset: 1, "stop-color": "rgba(0,0,0,0.35)" }, edgeG);
     const clipO = el("clipPath", { id: "obs-open" }, defs); el("path", { d: P(openingPts(m, 0)) }, clipO);
+    // Real brushed steel (ambientCG Metal011, CC0), finer and fainter than before; it also dithers the gradients.
+    const T = m.phone || m.compact ? 128 : 192;
+    const pat = el("pattern", { id: "obs-steel", width: T, height: T, patternUnits: "userSpaceOnUse" }, defs);
+    el("image", { href: `assets/fx/steel${m.phone || m.compact ? "-sm" : ""}.jpg`, width: T, height: T, preserveAspectRatio: "none" }, pat);
 
     const lip = m.lip, metal = m.metal, st = m.strip;
-    const outer = `M-2 -2H${W + 2}V${H + 2}H-2Z` + `M${st.x} ${st.y}V${st.y + st.h}H${st.x + st.w}V${st.y}Z`;
-    // 1. Gunmetal body.
+    const outer = `M-2 -2H${W + 2}V${H + 2}H-2Z` + P([[st.x, st.y], [st.x + st.w, st.y], [st.x + st.w, st.y + st.h], [st.x, st.y + st.h]], 5);
+    // 1. Gunmetal body, finely brushed.
     el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-body)", "fill-rule": "evenodd" }, svg);
-    el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.32, style: "mix-blend-mode:soft-light" }, svg);
-    // Bevel: a chamfer around the opening, each face shaded by its angle to the light like machined metal.
-    const bi = openingPts(m, lip), bo = openingPts(m, lip + metal * 0.42);
-    for (let i = 0; i < bi.length; i++) {
-      const j = (i + 1) % bi.length, a = bi[i], b = bi[j], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      const nx = (b[1] - a[1]) / L, ny = -(b[0] - a[0]) / L, f = -(nx * light[0] + ny * light[1]);
-      const col = f > 0 ? `rgba(205,215,225,${(0.05 + f * 0.11).toFixed(3)})` : `rgba(0,0,0,${(0.18 + -f * 0.3).toFixed(3)})`;
-      el("path", { d: `M${a[0]} ${a[1]}L${b[0]} ${b[1]}L${bo[j][0]} ${bo[j][1]}L${bo[i][0]} ${bo[i][1]}Z`, fill: col }, svg);
-    }
-    // Bevel step: a crisp 1 px dark groove where the body meets the lip, one step out.
-    el("path", { d: P(openingPts(m, lip + metal * 0.45)), fill: "none", stroke: "rgba(0,0,0,0.55)", "stroke-width": 1 }, svg);
-    el("path", { d: P(openingPts(m, lip + metal * 0.45 + 1)), fill: "none", stroke: "rgba(255,255,255,0.06)", "stroke-width": 1 }, svg);
-    // 2. Brushed-steel lip.
+    el("path", { d: outer + P(openingPts(m, lip)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.2, style: "mix-blend-mode:soft-light" }, svg);
+    // 2. Soft bevel from the body down to the lip (continuous, smooth curvature).
+    for (const [d, o] of [[0.75, 0.35], [0.5, 0.6], [0.25, 1]]) el("path", { d: P(openingPts(m, lip + metal * d)) + P(openingPts(m, lip)), fill: "url(#obs-bevel)", "fill-rule": "evenodd", opacity: o }, svg);
+    // 3. The chamfered lip and its fine specular edge.
     el("path", { d: P(openingPts(m, lip)) + P(openingPts(m, 0)), fill: "url(#obs-lip)", "fill-rule": "evenodd" }, svg);
-    el("path", { d: P(openingPts(m, lip)) + P(openingPts(m, 0)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.45, style: "mix-blend-mode:soft-light" }, svg);
-    // 3. Edge line at the glass: bright on the lit side, dark on the far side, same 1 px weight everywhere.
+    el("path", { d: P(openingPts(m, lip)) + P(openingPts(m, 0)), fill: "url(#obs-steel)", "fill-rule": "evenodd", opacity: 0.3, style: "mix-blend-mode:soft-light" }, svg);
+    el("path", { d: P(openingPts(m, 0.5)), fill: "none", stroke: "url(#obs-spec)", "stroke-width": 0.75 }, svg);
+    el("path", { d: P(openingPts(m, lip + 0.4)), fill: "none", stroke: "rgba(0,0,0,0.45)", "stroke-width": 0.6 }, svg);
     const pts = openingPts(m, 0.5);
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[i], b = pts[(i + 1) % pts.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      const nx = (b[1] - a[1]) / L, ny = -(b[0] - a[0]) / L;
-      const f = -(nx * light[0] + ny * light[1]);
-      el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": 1, "stroke-linecap": "square", stroke: f > 0.05 ? `rgba(220,232,240,${0.12 + f * 0.18})` : `rgba(0,0,0,${0.55 + Math.max(0, -f) * 0.35})` }, svg);
-    }
     const len = pts.reduce((acc, p, i) => acc + Math.hypot(pts[(i + 1) % pts.length][0] - p[0], pts[(i + 1) % pts.length][1] - p[1]), 0);
-    const sweep = el("path", { d: P(pts), fill: "none", stroke: "rgba(245,250,255,0.25)", "stroke-width": 1, "stroke-dasharray": `80 ${len}`, class: "obs-sweep" }, svg);
+    const sweep = el("path", { d: P(pts), fill: "none", stroke: "rgba(245,250,255,0.18)", "stroke-width": 0.75, "stroke-dasharray": `80 ${len}`, class: "obs-sweep" }, svg);
     sweep.style.setProperty("--len", String(len + 80));
     el("path", { d: P(openingPts(m, 0.5)), fill: "none", "stroke-width": 1.5, class: "obs-alert" }, svg);
     el("path", { d: P(openingPts(m, lip + 0.5)), fill: "none", "stroke-width": 1, class: "obs-alert" }, svg);
@@ -143,7 +153,7 @@ export function createFrame(host) {
     el("rect", { width: W, height: H, fill: "url(#obs-glass)" }, g);
     el("rect", { x: m.x0, y: m.y0, width: m.x1 - m.x0, height: m.y1 - m.y0, fill: "url(#obs-edge)" }, g);
     // 5. Console strip.
-    el("rect", { x: st.x + 0.5, y: st.y + 0.5, width: st.w - 1, height: st.h - 1, fill: "none", stroke: "rgba(255,255,255,0.08)" }, svg);
+    el("path", { d: P([[st.x + 0.5, st.y + 0.5], [st.x + st.w - 0.5, st.y + 0.5], [st.x + st.w - 0.5, st.y + st.h - 0.5], [st.x + 0.5, st.y + st.h - 0.5]], 5), fill: "none", stroke: "rgba(255,255,255,0.07)", "stroke-width": 0.75 }, svg);
     for (const [fx, col] of [[0.012, "#3fa36a"], [0.024, "#c8a046"], [0.976, "#5aa7c8"], [0.988, "#3fa36a"]]) el("circle", { cx: st.x + st.w * fx + (fx < 0.5 ? 5 : -5), cy: st.y + st.h / 2, r: m.phone ? 1.3 : 1.6, fill: col, opacity: 0.75 }, svg);
     // 6. HUD readouts in the four inner corners.
     const hud = el("g", { class: "obs-hud", opacity: hudAlpha }, svg);

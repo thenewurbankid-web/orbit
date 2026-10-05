@@ -181,7 +181,8 @@ export function openHelp() {
       <p><b>Agents:</b> tap a moon to see what the agent is doing and write to it (your message becomes a comment on its issue).</p>
       <p><b>Estimates:</b> tap "estimate" on a satellite for a fresh rough guess.</p>
       <p><b>Sound and alerts:</b> the bottom strip has sound on/off and volume. Critical alerts sound a klaxon until you acknowledge them.</p>
-      <p><b>Activity:</b> the tab on the right edge slides in a feed of everything that happened.</p>`,
+      <p><b>Activity:</b> the tab on the right edge slides in a feed of everything that happened.</p>
+      <p><b>Clipboard:</b> "clipboard" at the bottom opens a panel (also in the floating window). Drop or paste screenshots, files, links and text; a card's ⋯ menu has <b>Send to agent…</b>, which asks for the project, agent and a one-line message and sends only when you press Send.</p>`,
     "Connect this computer": `<p>Orbit shows the AI companies you run in <b>Paperclip</b> on your computer (Mac, Windows or Linux). To see yours on this website:</p>
       <p><b>1.</b> Paperclip runs on the computer. If you don't have it yet, get it from <a href="https://paperclip.ing" target="_blank" rel="noopener" style="color:#bfe9ff">paperclip.ing</a>.</p>
       <p><b>2.</b> Download Orbit for your computer and double-click <b>Start Orbit</b> in it. It sets itself up in your user folder (no admin) and starts by itself at every login. It uses the Node.js that Paperclip already needs.</p>

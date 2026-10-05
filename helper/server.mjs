@@ -709,6 +709,10 @@ async function webFile(rel) {
   try { await webFetching.get(rel); } catch (e) { if (!st) throw e; } // offline: keep the old copy
   return cached;
 }
+// clipboard.mjs arrived with helper 1.1.0. A copy updated from 1.0.0 may not have it yet: then the
+// control centre offers the update again (controls.mjs counts missing files) and sending says so.
+const clipboardMod = await import("./clipboard.mjs").catch(() => null);
+const clipboardSend = !clipboardMod ? async () => { throw Object.assign(new Error("Sending from the clipboard needs one more Orbit update: open This computer in the control centre and update."), { status: 503 }); } : clipboardMod.createClipboardSend({ companies: COMPANIES, board: () => board, api, baseOf, projectAgents, pickPoc, addLog, webBase: (cfg) => baseOf(cfg).replace(/\/api$/, ""), afterSend: () => poll().then(schedule) });
 const controls = createControls({ port: PORT, here, dataDir: DATA, version: VERSION, site: () => config.siteUrl || SITE, paperclipUp, access: () => access, onExit: () => server.close() });
 
 const server = createServer(async (req, res) => {
@@ -731,16 +735,16 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET") {
       const page = p === "/" ? "index.html" : p.slice(1);
-      if (/^[a-z0-9-]+\.(html|js|css|svg|png|webmanifest)$/.test(page)) {
+      if (/^(?:vendor\/pip-clipboard\/src\/)?[a-z0-9-]+\.(html|js|css|svg|png|webmanifest)$/.test(page)) {
         const types = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css", svg: "image/svg+xml", png: "image/png", webmanifest: "application/manifest+json" };
         try { return send(res, 200, types[page.split(".").pop()], await readFile(await webFile(page))); } catch { return send(res, 404, "text/plain", "not found"); }
       }
-      const asset = /^\/assets\/(intro\.mp4|intro-poster\.jpg|help\/(?:overview|planet|chat)\.jpg|planets\/(?:mars|mercury|moon|earth|earth-clouds|jupiter|ice)(?:-1k)?\.jpg|fx\/(?:explosion|flare|glint|streak|laser|steel|aurora|lightning|comet|meteor)(?:-sm)?\.jpg|fx\/craft(?:-sm)?\.webp)$/.exec(p);
+      const asset = /^\/assets\/(intro\.mp4|intro-poster\.jpg|help\/(?:overview|planet|chat)\.jpg|planets\/(?:mars|mercury|moon|earth|earth-clouds|jupiter|ice)(?:-1k)?\.jpg|fx\/(?:flare|glint|streak|laser|steel|aurora|lightning|comet|meteor|plasma)(?:-sm)?\.jpg|fx\/hit\.jpg|fx\/bolt\.png|fx\/blast(?:-sm)?\.webp|fx\/ships\/(?:drone|fighter|hauler|hostile|vessel-a|vessel-b|vessel-c)\.glb)$/.exec(p);
       if (asset) {
         // Byte ranges, so Safari and iOS can play the intro video.
         const f = await webFile("assets/" + asset[1]);
         const size = (await fstat(f)).size;
-        const type = asset[1].endsWith(".mp4") ? "video/mp4" : asset[1].endsWith(".webp") ? "image/webp" : asset[1].endsWith(".png") ? "image/png" : "image/jpeg";
+        const type = asset[1].endsWith(".mp4") ? "video/mp4" : asset[1].endsWith(".webm") ? "video/webm" : asset[1].endsWith(".webp") ? "image/webp" : asset[1].endsWith(".png") ? "image/png" : asset[1].endsWith(".glb") ? "model/gltf-binary" : "image/jpeg";
         const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
         if (m) {
           const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
@@ -791,6 +795,7 @@ const server = createServer(async (req, res) => {
         schedule();
         return json(res, 200, boardView());
       }
+      if (p === "/api/clipboard/send") return json(res, 200, await clipboardSend(req));
       if (p === "/api/project-message") { const b = await readBody(req); const r = await projectMessage({ companyId: String(b.companyId ?? ""), text: b.text, dryRun: Boolean(b.dryRun) }); if (!r.dryRun) poll().then(schedule); return json(res, 200, r); }
       if (p === "/api/project-poc") { const b = await readBody(req); const r = await setPoc({ companyId: String(b.companyId ?? ""), agentId: String(b.agentId ?? "") }); poll().then(schedule); return json(res, 200, r); }
       if (p === "/api/project-work") {

@@ -82,6 +82,17 @@ async function http(path, opts = {}) {
   return body;
 }
 
+// Multipart POST to the service (clipboard sends): the same address and token as http(), with the
+// browser's own multipart content type.
+export async function postForm(path, fd) {
+  const auth = apiToken ? { "x-orbit-token": apiToken } : key ? { "x-board-key": key } : {};
+  const res = await fetch(apiBase + path, { method: "POST", headers: auth, body: fd });
+  const text = await res.text();
+  let body; try { body = JSON.parse(text); } catch { body = text; }
+  if (!res.ok) throw new Error(typeof body === "string" ? body : body.error || String(res.status));
+  return body;
+}
+
 async function hostLoad() {
   try {
     setBoard(await http("api/board"));
@@ -729,6 +740,8 @@ async function boot() {
       store.introPending = true;
     }
   } catch (e) { console.error("intro", e); $("sky").style.opacity = "1"; }
+  // Orbit's clipboard (vendored pip-clipboard): toggle, float-window drawer, "Send to agent".
+  import("./clipboard.js").then((m) => m.initClipboard({ store, postForm })).catch((e) => console.error("clipboard", e));
   try {
     const { startScene } = await import("./scene.js");
     await startScene({ canvas: $("sky"), kbd: $("kbd"), reduced });

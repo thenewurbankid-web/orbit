@@ -12,6 +12,8 @@ export function surfacePoint(center, radius, dir, lift = 0) {
   return center.clone().addScaledVector(dir.clone().normalize(), radius + lift);
 }
 function orientOutward(mesh, center, at) { mesh.position.copy(at); mesh.lookAt(at.clone().add(at.clone().sub(center))); }
+// Light envelope: fast attack, long soft decay (never a symmetric pulse).
+export const flashEnv = (k, a = 0.12) => (k < a ? 1 - Math.pow(1 - k / a, 3) : Math.pow(Math.max(0, 1 - (k - a) / (1 - a)), 2.2));
 const add = (m) => { m.material.blending = THREE.AdditiveBlending; m.material.transparent = true; m.material.depthWrite = false; return m; };
 
 // ---------- persistent ----------
@@ -23,7 +25,7 @@ export function storm(center, radius, dir, reduced, rfx = null) {
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader: `uniform float uTime, uFade, uFlash, uHas; uniform sampler2D uBolt; uniform vec4 uStrike; varying vec2 vUv;
       void main(){ vec2 p = vUv*2.-1.; float r = length(p); if (r > 1.0) discard;
-        float a = atan(p.y, p.x) + r*6.0 - uTime*0.8;
+        float a = atan(p.y, p.x + 1e-5) + r*6.0 - uTime*0.8; // +1e-5: atan(0,0) is NaN on some GPUs, and bloom would spread it
         float arms = 0.5 + 0.5*sin(a*3.0);
         float dark = smoothstep(1.0, 0.15, r) * (0.55 + 0.45*arms);
         vec3 col = vec3(0.02, 0.02, 0.03);
@@ -107,9 +109,9 @@ export function attack(center, radius, getTarget, reduced, rfx = null) {
       if (!reduced) {
         fire -= dt;
         if (fire <= 0 && target) {
-          fire = 1.4 + Math.random() * 1.6;
+          fire = 8 + Math.random() * 10; // rare, single bolts
           const from = craft[Math.floor(Math.random() * 3)].position.clone();
-          if (rfx?.bolt(from, target.clone(), { color: new THREE.Color(1.0, 0.55, 0.2), width: 0.04, dur: 0.55 })) shot = null;
+          if (rfx?.bolt(from, target.clone(), { color: new THREE.Color(0.62, 0.5, 0.4), width: 0.01, burst: 1 })) shot = null;
           else shot = { from, to: target.clone(), k: 0 };
         }
         if (shot) {
@@ -163,7 +165,7 @@ export function aurora(center, radius, rfx = null, sun = null) {
     m.rotation.x = Math.PI / 2; m.position.set(0, radius * (0.93 - k * 0.04), 0); g.add(m); return m;
   });
   g.position.copy(center);
-  return { obj: g, dur: 3.2, update(k, dt, t) { rings.forEach((r, i) => { r.material.opacity = Math.sin(Math.PI * k) * (0.9 - i * 0.2) * (0.75 + 0.25 * Math.sin(t * 6 + i)); r.scale.setScalar(1 + k * 0.08); }); } };
+  return { obj: g, dur: 3.2, update(k, dt, t) { rings.forEach((r, i) => { r.material.opacity = flashEnv(k, 0.25) * (0.9 - i * 0.2) * (0.85 + 0.15 * Math.sin(t * 0.9 + i)); r.scale.setScalar(1 + k * 0.08); }); } };
 }
 
 // Aurora from a real photo (ISS-46, aurora over Canada): the curtain strip (green base, red tops) wrapped on a
@@ -262,7 +264,7 @@ export function supply(getMoon, moonR, rfx = null) {
     pulse.position.copy(m); const pk = Math.max(0, (k - 0.7) / 0.3);
     if (rfx?.ready("glint")) { // docking: a soft real glint at the moon instead of an expanding sphere
       pulse.visible = false;
-      if (pk > 0 && !docked) { docked = true; rfx.flash(m.clone().add(new THREE.Vector3(0, moonR + 0.15, 0)), { size: moonR * 2.2, color: TEAL.clone().lerp(WHITE, 0.4), dur: 0.9 }); }
+      if (pk > 0 && !docked) { docked = true; rfx.flash(m.clone().add(new THREE.Vector3(0, moonR + 0.15, 0)), { size: 0.03, color: TEAL.clone().lerp(WHITE, 0.6), peak: 0.3, decay: 700 }); }
     } else { pulse.scale.setScalar(moonR * (1 + pk * 1.5)); pulse.material.opacity = pk > 0 ? (1 - pk) * 0.35 : 0; }
     ship.visible = k < 0.95;
   } };
@@ -273,11 +275,11 @@ export function clearSky(center, radius, dir, rfx = null) {
   if (rfx?.ready("flare")) {
     // Sunlight breaking through: a real star-glare photo, warm white, swelling and fading (no flat disc).
     const m = rfx.glint("flare", new THREE.Color(1, 0.96, 0.88), radius * 0.9, 0); m.position.copy(at);
-    return { obj: m, dur: 2.0, update(k) { m.material.uniforms.uOpacity.value = Math.sin(Math.PI * Math.min(1, k * 1.1)) * 0.75; m.scale.setScalar(0.6 + k * 0.5); } };
+    return { obj: m, dur: 2.0, update(k) { m.material.uniforms.uOpacity.value = flashEnv(k, 0.2) * 0.55; m.scale.setScalar(0.6 + k * 0.5); } };
   }
   const m = add(new THREE.Mesh(new THREE.CircleGeometry(radius * 0.5, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.97, 0.9).multiplyScalar(1.5) })));
   orientOutward(m, center, at);
-  return { obj: m, dur: 1.4, update(k) { m.material.opacity = Math.sin(Math.PI * k) * 0.45; m.scale.setScalar(0.4 + k * 0.8); } };
+  return { obj: m, dur: 1.4, update(k) { m.material.opacity = flashEnv(k, 0.2) * 0.35; m.scale.setScalar(0.4 + k * 0.8); } };
 }
 
 export function cityLights(center, radius, sun, count) {
@@ -290,16 +292,16 @@ export function cityLights(center, radius, sun, count) {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
   const m = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.06, color: new THREE.Color(1, 0.86, 0.55).multiplyScalar(1.6), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-  return { obj: m, dur: 3.2, update(k, dt, t) { m.material.opacity = Math.sin(Math.PI * k) * (0.8 + 0.2 * Math.sin(t * 20)); } };
+  return { obj: m, dur: 3.2, update(k, dt, t) { m.material.opacity = flashEnv(k, 0.3) * (0.9 + 0.1 * Math.sin(t * 1.1)); } }; // lights come on, then fade; no flicker
 }
 
 export function impacts(center, radius, sun, rfx = null) {
   const g = new THREE.Group();
-  const real = !!rfx?.ready("explosion");
-  const hits = [0].map((i) => {
+  const real = !!rfx?.ready("blast");
+  const hits = [0].map((i) => { // one tiny, distant hit
     const d = new THREE.Vector3().randomDirection().lerp(sun, 0.5).normalize();
     const at = surfacePoint(center, radius, d, 0.01);
-    const flash = add(new THREE.Mesh(new THREE.CircleGeometry(radius * 0.08, 24), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.55, 0.25).multiplyScalar(3) })));
+    const flash = add(new THREE.Mesh(new THREE.CircleGeometry(radius * 0.025, 24), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.92, 0.8).multiplyScalar(1.1) })));
     const crater = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.06, 24), new THREE.MeshBasicMaterial({ color: 0x050505, transparent: true, opacity: 0, depthWrite: false }));
     orientOutward(flash, center, at); orientOutward(crater, center, surfacePoint(center, radius, d, 0.005));
     g.add(flash, crater);
@@ -310,9 +312,9 @@ export function impacts(center, radius, sun, rfx = null) {
     const s = k * 6;
     for (const h of hits) {
       const lt = s - h.t0;
-      if (real) { if (lt > 0 && !h.hit) { h.hit = true; rfx.boom(h.at, { size: radius * 0.07, dur: 1.4 }); } }
+      if (real) { if (lt > 0 && !h.hit) { h.hit = true; rfx.boom(h.at, { size: radius * 0.07, light: 0.25 }); } }
       else { h.flash.material.opacity = lt > 0 && lt < 0.4 ? (1 - lt / 0.4) * 0.6 : 0; h.flash.scale.setScalar(1 + Math.max(0, lt) * 0.6); }
-      h.crater.material.opacity = lt > 0.1 ? Math.max(0, 0.85 - (lt - 0.1) / 6) : 0;
+      h.crater.material.opacity = lt > 0.3 ? Math.min(0.5, (lt - 0.3) * 1.5) * Math.max(0, 1 - (lt - 0.3) / 5.5) : 0; // scorch eases in and fades
     }
   } };
 }
@@ -327,7 +329,7 @@ export function tremor(planet, center, radius, sun) {
   return { obj: crack, dur: 1.6, update(k) {
     const shake = k < 0.5 ? (1 - k / 0.5) * radius * 0.03 : 0;
     planet.position.copy(base).add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
-    crack.material.opacity = Math.sin(Math.PI * k);
+    crack.material.opacity = flashEnv(k, 0.15) * 0.8;
   }, end() { planet.position.copy(base); } };
 }
 

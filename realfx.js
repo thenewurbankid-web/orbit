@@ -5,18 +5,7 @@
 import * as THREE from "three";
 
 const cache = new Map();
-const GRID = 6, FRAMES = 36; // explosion flipbook: 6×6 frames, row by row from the top left
-// Craft atlas: 4×2 cells. nose = image angle (rad) the craft's front points to; wobble = idle drift.
-const CRAFT = {
-  drone:   { cell: 0, nose: 0, engine: 0 },              // MarCO CubeSat
-  fighter: { cell: 1, nose: Math.PI, engine: 0.42 },     // Parker Solar Probe, heat shield forward
-  pod:     { cell: 2, nose: -Math.PI / 2, engine: 0.4 }, // TESS, cameras up
-  // New Horizons: its white dish faces us and the render is lit flat, so its highlights are rolled off hard
-  // (knee) and the whole craft sits lower (gain) to read like the others under the scene's single sun.
-  hostile: { cell: 3, nose: Math.PI / 2, engine: 0, face: true, gain: 0.72, knee: 0.3 }, // New Horizons, dish toward us
-  ufo:     { cell: 4, nose: 0, engine: 0, face: true },  // Juno
-};
-
+const ONE_SIZE = new Set(["hit", "bolt"]); // already tiny: one file for every tier
 const VERT = `
   uniform float uRot; uniform vec2 uSize; uniform vec2 uOff;
   varying vec2 vUv; varying vec2 vS;
@@ -31,18 +20,18 @@ const VERT = `
     gl_Position = projectionMatrix * mv;
   }`;
 
-export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
+export function createRealFx({ tier, reduced, camera, world, sun, particles, envMap = null, flares = null }) {
   const small = tier.mobile || tier.name === "low";
   const tex = {};
   const loads = {};
   function load(name, ext = "jpg") {
-    const url = `assets/fx/${name}${small ? "-sm" : ""}.${ext}`;
+    const url = `assets/fx/${name}${small && !ONE_SIZE.has(name) ? "-sm" : ""}.${ext}`;
     if (!cache.has(url)) cache.set(url, new THREE.TextureLoader().loadAsync(url).then((t) => {
       t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; return t;
     }).catch(() => null));
     loads[name] = cache.get(url).then((t) => { if (t) tex[name] = t; return t; });
   }
-  load("explosion"); load("glint"); load("flare"); load("streak"); load("laser"); load("craft", "webp");
+  load("blast", "webp"); load("hit"); load("bolt", "png"); load("glint"); load("flare"); load("streak"); load("laser");
   load("aurora"); load("lightning"); load("comet"); load("meteor"); // aurora curtain, storm bolt, comet, meteor trail
   const ready = (n) => !!tex[n];
 
@@ -84,97 +73,71 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
     return m;
   }
 
-  // ---------- explosions: real fireball footage as a flipbook ----------
-  const expMat = () => new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, toneMapped: false,
+  // ---------- explosions: a pre-rendered flipbook (assets/fx/blast: the NASA Antares fireball for the fire, an
+  // offline-rendered smoke puff and dragged, motion-blurred sparks, 48 frames at 16 fps). Runtime only places,
+  // varies (size, rotation, mirror, rate ±10 %) and crossfades between frames; the timing lives in the render.
+  const BLAST = { cols: 8, rows: 6, frames: 48, fps: 16 };
+  const blastMat = () => new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, toneMapped: true,
     blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
-    uniforms: { map: { value: tex.explosion }, uFrame: { value: 0 }, uHeat: { value: 1 }, uSmoke: { value: 0 }, uFade: { value: 0 }, uGain: { value: 1 }, uTint: { value: new THREE.Color(1, 1, 1) }, uFlip: { value: 1 },
+    uniforms: { map: { value: tex.blast ?? null }, uFrame: { value: 0 }, uGain: { value: 1 }, uFlip: { value: 1 }, uGrid: { value: new THREE.Vector3(BLAST.cols, BLAST.rows, BLAST.frames) },
       uRot: { value: 0 }, uSize: { value: new THREE.Vector2(1, 1) }, uOff: { value: new THREE.Vector2() } },
     vertexShader: VERT,
-    fragmentShader: `uniform sampler2D map; uniform float uFrame, uHeat, uSmoke, uFade, uGain, uFlip; uniform vec3 uTint; varying vec2 vUv;
-      vec2 cell(float f, vec2 uv) { float r = floor(f / ${GRID}.0), c = f - r * ${GRID}.0; return (vec2(c, ${GRID - 1}.0 - r) + uv) / ${GRID}.0; }
+    fragmentShader: `uniform sampler2D map; uniform float uFrame, uGain, uFlip; uniform vec3 uGrid; varying vec2 vUv;
+      vec4 cell(float f, vec2 uv) { float r = floor(f / uGrid.x), c = f - r * uGrid.x; return texture2D(map, (vec2(c, uGrid.y - 1.0 - r) + uv) / uGrid.xy); }
       void main() {
-        vec2 uv = vec2(uFlip > 0.0 ? vUv.x : 1.0 - vUv.x, vUv.y);
-        uv = clamp(uv, 0.004, 0.996);
-        float f0 = floor(uFrame), fr = uFrame - f0;
-        vec3 c = mix(texture2D(map, cell(f0, uv)).rgb, texture2D(map, cell(min(f0 + 1.0, ${FRAMES - 1}.0), uv)).rgb, fr);
-        float l = dot(c, vec3(0.3, 0.55, 0.15));
-        // Cooling: the real footage's white-yellow core first, then orange, then a dull ember red that dies to smoke.
-        vec3 ember = vec3(0.42, 0.08, 0.015) * l * l * l;
-        // Per pixel: only the brightest parts keep the footage's hot colour; the rim and, over time, everything cools
-        // to a dull red, so the ball keeps its real structure instead of reading as a flat bright disc.
-        float h = clamp(uHeat * 1.5 - (1.0 - l) * 0.9, 0.0, 1.0);
-        vec3 col = mix(ember, c, h) * uTint * uGain * (1.0 - uSmoke * 0.9); // embers die as the smoke takes over
-        float smoke = smoothstep(0.02, 0.25, l) * uSmoke;
-        col += vec3(0.045, 0.04, 0.038) * smoke; // smoke faintly lit, dark grey-brown
-        gl_FragColor = vec4(col * uFade, smoke * uFade);
+        vec2 uv = clamp(vec2(uFlip > 0.0 ? vUv.x : 1.0 - vUv.x, vUv.y), 0.003, 0.997);
+        float f0 = floor(uFrame), w = uFrame - f0;
+        vec4 c = mix(cell(f0, uv), cell(min(f0 + 1.0, uGrid.z - 1.0), uv), w);   // crossfade: no frame stepping
+        float edge = smoothstep(0.5, 0.36, length(vUv - 0.5));                      // feathered quad edge
+        gl_FragColor = vec4(c.rgb * uGain, c.a) * edge;
       }`,
   });
   const live = []; // running transient effects {update(dt) → keep}
-  const HOT = new THREE.Color(1.0, 0.82, 0.55).multiplyScalar(2.4), EMBER = new THREE.Color(0.5, 0.1, 0.02).multiplyScalar(0.15);
-  // A short space explosion: hot flash, real fireball that cools to dark smoke, fine sparks. Silent.
-  function boom(pos, { size = 1, tint = null, sparks = true, dur = 1.5, delay = 0 } = {}) {
+  // One shared point light lends each blast a brief glow on nearby surfaces (never more than one at a time).
+  const lamp = new THREE.PointLight(0xffd9b0, 0, 4, 2); world.add(lamp);
+  let lampT = -1, lampPeak = 0;
+  function lightUp(pos, peak, range) { lamp.position.copy(pos); lamp.distance = range; lampPeak = peak; lampT = 0; }
+  let lastBoom = -1e9;
+  const MIN_GAP = 6000; // at most one blast in view, several seconds apart; extra ones become a faint glint
+  // boom(pos, { size, scale }) → true if something was shown. `size` is the blast's world diameter.
+  function boom(pos, { size = 0.3, rate = 1, light = 0.6, force = false } = {}) {
     if (reduced) return false;
-    const at = pos.clone();
-    const g = new THREE.Group(); g.position.copy(at);
-    let ball = null;
-    if (tex.explosion) {
-      const mat = expMat(); if (tint) mat.uniforms.uTint.value.copy(tint);
-      mat.uniforms.uRot.value = (Math.random() - 0.5) * 0.7; mat.uniforms.uFlip.value = Math.random() < 0.5 ? 1 : -1;
-      ball = board(mat, size); g.add(ball);
-      api.lastBall = ball;
-    }
-    const flash = tex.glint ? glint("glint", new THREE.Color(1, 0.93, 0.82), size * 2.2, 0) : null;
-    if (flash) { flash.material.uniforms.uRot.value = Math.random() * Math.PI; g.add(flash); }
-    let t = -delay, started = false;
-    live.push((dt) => {
-      t += dt; if (t < 0) return true;
-      if (!started) {
-        started = true; world.add(g);
-        if (sparks && particles) {
-          const n = small ? 10 : 22;
-          for (let i = 0; i < n; i++) particles.emit(at.clone(), new THREE.Vector3().randomDirection().multiplyScalar(size * (2.5 + Math.random() * 3)), HOT, EMBER, 0.05 + Math.random() * 0.05, 0.3 + Math.random() * 0.45); // fine, fast, short-lived
-        }
-        if (!ball && !flash && particles) for (let i = 0; i < 30; i++) particles.emit(at.clone(), new THREE.Vector3().randomDirection().multiplyScalar(0.8 + Math.random() * 1.6), HOT, EMBER, 0.3, 0.9);
-      }
-      const k = Math.min(1, t / dur);
-      if (ball) {
-        const u = ball.material.uniforms;
-        u.uFrame.value = Math.min(FRAMES - 1.001, Math.pow(k, 0.8) * FRAMES);
-        u.uHeat.value = 1 - THREE.MathUtils.smoothstep(k, 0.03, 0.3);
-        u.uSmoke.value = THREE.MathUtils.smoothstep(k, 0.18, 0.5) * 0.92;
-        u.uFade.value = (k < 0.04 ? k / 0.04 : 1) * (1 - THREE.MathUtils.smoothstep(k, 0.55, 1));
-        u.uGain.value = 0.42 + 0.75 * Math.max(0, 1 - k * 5); // bright only in the first instant: no blown-out blob
-        ball.scale.setScalar(0.55 + 0.75 * (1 - Math.pow(1 - k, 3)));
-      }
-      if (flash) {
-        const ft = t / 0.28;
-        flash.material.uniforms.uOpacity.value = ft < 1 ? Math.pow(1 - ft, 2) * 1.6 : 0;
-        flash.scale.setScalar(0.5 + Math.min(1, ft) * 0.8);
-      }
-      if (k >= 1) { world.remove(g); return false; }
-      return true;
-    });
-    return true;
-  }
-
-  // A brief burst of real lens glare (a hatch opening, a delivery landing): no fire.
-  function flash(pos, { size = 1, color = new THREE.Color(1, 1, 1), dur = 0.6, name = "glint", aspect = 1, rot = null } = {}) {
-    if (reduced || !tex[name]) return false;
-    const m = glint(name, color, size, 0); m.position.copy(pos); m.material.uniforms.uRot.value = rot ?? Math.random() * Math.PI;
-    m.material.uniforms.uSize.value.set(size, size / aspect);
-    world.add(m);
+    const now = performance.now();
+    if (!tex.blast) return false;
+    if (!force && (now - lastBoom < MIN_GAP || live.some((f) => f.blast))) { flash(pos, { size: 0.025, peak: 0.25, decay: 500 }); return true; }
+    lastBoom = now;
+    const mat = blastMat();
+    const v = 0.85 + Math.random() * 0.3;
+    mat.uniforms.uRot.value = Math.random() * Math.PI * 2; mat.uniforms.uFlip.value = Math.random() < 0.5 ? 1 : -1;
+    mat.uniforms.uGain.value = 0.55;
+    const m = board(mat, size * v); m.position.copy(pos); m.renderOrder = 7; world.add(m);
+    const spd = rate * (0.9 + Math.random() * 0.2), drift = new THREE.Vector3().randomDirection().multiplyScalar(size * 0.04);
+    flash(pos, { name: "glint", size: 0.02 + size * 0.03, peak: 0.35, attack: 30, decay: 420, color: [1, 0.95, 0.86] });
+    lightUp(pos, light, Math.max(1.5, size * 12));
     let t = 0;
-    live.push((dt) => {
-      t += dt; const k = Math.min(1, t / dur);
-      m.material.uniforms.uOpacity.value = (k < 0.12 ? k / 0.12 : Math.pow(1 - (k - 0.12) / 0.88, 2)) * 1.4;
-      m.scale.setScalar(0.7 + 0.5 * k);
-      if (k >= 1) { world.remove(m); return false; }
+    const fx = (dt) => {
+      t += dt * spd;
+      const f = t * BLAST.fps;
+      mat.uniforms.uFrame.value = Math.min(BLAST.frames - 1.001, f);
+      m.position.addScaledVector(drift, dt);
+      if (f >= BLAST.frames - 1) { world.remove(m); return false; }
       return true;
-    });
+    };
+    fx.blast = true; live.push(fx);
     return true;
   }
 
+  // A brief burst of glare (a hatch opening, a delivery landing): a CSS flare, or a WebGL glint if none.
+  function flash(pos, o = {}) {
+    if (reduced) return false;
+    if (flares) {
+      const c = o.color ? (o.color.isColor ? [o.color.r, o.color.g, o.color.b] : o.color) : [1, 0.96, 0.9];
+      const m = Math.max(...c, 1e-3), col = c.map((x) => x / m);           // colour only; intensity comes from `peak`
+      return flares.flash(pos, { name: o.name ?? "glint", size: o.size ?? 0.04, color: col, peak: o.peak ?? 0.45, attack: o.attack ?? 35, decay: o.decay ?? (o.dur ? o.dur * 1000 : 600), aspect: o.aspect ?? 1, rot: o.rot != null ? (o.rot * 180) / Math.PI : undefined, follow: o.follow });
+    }
+    return false;
+  }
   // ---------- beams: a real laser beam's measured profile, stretched between two points ----------
   // A camera-facing ribbon between two points (u along a→b, v across); set(a, b, w) moves it.
   function ribbon(mat, width, order = 6) {
@@ -248,108 +211,195 @@ export function createRealFx({ tier, reduced, camera, world, sun, particles }) {
     };
     return m;
   }
-  // A travelling bolt from a to b (a short segment, soft ends), with a muzzle glint and a hit glint.
-  function bolt(from, to, { color = new THREE.Color(0.35, 1.0, 0.55), width = 0.035, dur = 0.42, hit = true } = {}) {
-    if (reduced) return false;
-    const a = from.clone(), b = to.clone();
-    const m = beamMesh(color, width); world.add(m);
-    const muzzle = tex.glint ? glint("glint", color.clone().lerp(new THREE.Color(1, 1, 1), 0.5), width * 9, 0) : null;
-    if (muzzle) { muzzle.position.copy(a); world.add(muzzle); }
-    const head = new THREE.Vector3(), tail = new THREE.Vector3();
-    let t = 0, struck = false;
-    live.push((dt) => {
-      t += dt; const k = t / dur;
-      const hk = Math.min(1, k * 1.5), tk = Math.max(0, k * 1.5 - 0.55);
-      head.lerpVectors(a, b, hk); tail.lerpVectors(a, b, Math.min(hk - 0.001, tk));
-      m.userData.set(tail, head);
-      m.material.uniforms.uOpacity.value = Math.min(1, k * 8) * (1 - THREE.MathUtils.smoothstep(k, 0.75, 1)) * 1.3;
-      if (muzzle) muzzle.material.uniforms.uOpacity.value = Math.max(0, 1 - k * 5) * 1.2;
-      if (hit && !struck && hk >= 1) { struck = true; flash(b, { size: width * 14, color: color.clone().lerp(new THREE.Color(1, 1, 1), 0.4), dur: 0.35 }); }
-      if (k >= 1) { world.remove(m); if (muzzle) world.remove(muzzle); m.geometry.dispose(); return false; }
-      return true;
-    });
+  // ---------- blaster bolts: instanced, camera-facing capsules with a white-hot core and a tinted glow
+  // (pre-rendered profile assets/fx/bolt.png). Short and fast; pooled; a tiny hit spark flipbook on impact.
+  const BOLTS = 32;
+  const bGeo = new THREE.InstancedBufferGeometry();
+  bGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
+  bGeo.setIndex([0, 1, 2, 2, 1, 3]);
+  const aA = new THREE.InstancedBufferAttribute(new Float32Array(BOLTS * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const aB = new THREE.InstancedBufferAttribute(new Float32Array(BOLTS * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const aC = new THREE.InstancedBufferAttribute(new Float32Array(BOLTS * 4), 4).setUsage(THREE.DynamicDrawUsage); // rgb, opacity
+  const aW = new THREE.InstancedBufferAttribute(new Float32Array(BOLTS), 1).setUsage(THREE.DynamicDrawUsage);
+  bGeo.setAttribute("aA", aA); bGeo.setAttribute("aB", aB); bGeo.setAttribute("aC", aC); bGeo.setAttribute("aW", aW);
+  bGeo.instanceCount = 0;
+  const bMat = new THREE.ShaderMaterial({
+    ...additive, side: THREE.DoubleSide, // the ribbon's winding depends on its direction on screen
+    uniforms: { map: { value: null } },
+    vertexShader: `attribute vec3 aA, aB; attribute vec4 aC; attribute float aW; varying vec2 vUv; varying vec4 vC;
+      void main() {
+        vec4 a = viewMatrix * vec4(aA, 1.0), b = viewMatrix * vec4(aB, 1.0);
+        vec3 d = b.xyz - a.xyz; float L = length(d); d /= max(L, 1e-4);
+        vec3 side = normalize(cross(d, normalize(-(a.xyz + b.xyz) * 0.5))) * aW;
+        vec3 p = mix(a.xyz - d * aW, b.xyz + d * aW, position.x) + side * (position.y * 2.0 - 1.0) * 2.2;
+        vUv = position.xy; vC = aC; gl_Position = projectionMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: `uniform sampler2D map; varying vec2 vUv; varying vec4 vC;
+      void main() { vec2 t = texture2D(map, vUv).rg; vec3 col = vec3(1.0, 0.98, 0.95) * t.r * 1.6 + vC.rgb * t.g * 0.45; gl_FragColor = vec4(col * vC.a, 1.0); }`,
+  });
+  loads.bolt.then((t) => { bMat.uniforms.map.value = t; });
+  const bMesh = new THREE.Mesh(bGeo, bMat); bMesh.frustumCulled = false; bMesh.renderOrder = 6; world.add(bMesh);
+  const bolts = [];
+  const hitMat = () => new THREE.ShaderMaterial({ ...additive, uniforms: { map: { value: tex.hit }, uFrame: { value: 0 }, uGain: { value: 0.6 }, uRot: { value: 0 }, uSize: { value: new THREE.Vector2(1, 1) }, uOff: { value: new THREE.Vector2() } },
+    vertexShader: VERT, fragmentShader: `uniform sampler2D map; uniform float uFrame, uGain; varying vec2 vUv;
+      vec3 cell(float f) { float r = floor(f / 4.0), c = f - r * 4.0; return texture2D(map, (vec2(c, 3.0 - r) + vUv) / 4.0).rgb; }
+      void main() { float f0 = floor(uFrame); gl_FragColor = vec4(mix(cell(f0), cell(min(15.0, f0 + 1.0)), uFrame - f0) * uGain, 1.0); }` });
+  function hitSpark(pos, size) {
+    if (!tex.hit) return;
+    const m = board(hitMat(), size); m.position.copy(pos); m.material.uniforms.uRot.value = Math.random() * 6.28; world.add(m);
+    let t = 0; live.push((dt) => { t += dt; m.material.uniforms.uFrame.value = Math.min(14.999, t * 40); if (t > 0.4) { world.remove(m); return false; } return true; });
+  }
+  // One bolt from a toward b. speed in units/s; it either hits b (tiny spark, glint, a touch of light) or fades past it.
+  function fireBolt(a, b, { color, width = 0.012, len = 0.3, speed = 30, hit = true, delay = 0 }) {
+    const dir = b.clone().sub(a); const dist = dir.length(); dir.divideScalar(dist || 1);
+    bolts.push({ a: a.clone(), dir, dist, color: new THREE.Color(color), w: width * (0.85 + Math.random() * 0.3), len: len * (0.8 + Math.random() * 0.4), speed, t: -delay, hit, struck: false, muzzle: false });
+  }
+  function bolt(from, to, { color = new THREE.Color(0.35, 1.0, 0.55), width = 0.012, burst = 2, gap = 0.08, hit = true, speed = 30 } = {}) {
+    if (reduced || bolts.length > BOLTS - 4) return false;
+    const n = Math.max(1, burst);
+    for (let i = 0; i < n; i++) {
+      const spread = new THREE.Vector3().randomDirection().multiplyScalar(from.distanceTo(to) * 0.012);
+      fireBolt(from, to.clone().add(spread), { color, width, speed, delay: i * gap * (0.85 + Math.random() * 0.3), hit: hit && (i === 0 || Math.random() < 0.6) });
+    }
     return true;
   }
-
-  // ---------- craft: NASA spacecraft renders as billboards, shaded toward the sun ----------
-  const craftMat = (cell) => new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, toneMapped: true,
-    uniforms: { map: { value: tex.craft ?? null }, uCell: { value: new THREE.Vector2(cell % 4, 1 - Math.floor(cell / 4)) }, uSun: shared.uSun, uOpacity: { value: 1 }, uDim: { value: 1 }, uWarm: { value: 0 }, uKnee: { value: 10 },
-      uRot: { value: 0 }, uSize: { value: new THREE.Vector2(1, 1) }, uOff: { value: new THREE.Vector2() } },
-    vertexShader: VERT,
-    fragmentShader: `uniform sampler2D map; uniform vec2 uCell; uniform vec3 uSun; uniform float uOpacity, uDim, uWarm, uKnee; varying vec2 vUv; varying vec2 vS;
-      void main() {
-        vec4 t = texture2D(map, (uCell + vUv) / vec2(4.0, 2.0));
-        if (t.a < 0.02) discard;
-        float g = dot(t.rgb, vec3(0.3, 0.55, 0.15));
-        vec3 c = mix(vec3(g), t.rgb, 0.7) * vec3(0.92, 0.96, 1.0);          // grade the bright renders down a little
-        float m = max(c.r, max(c.g, c.b));
-        if (m > uKnee) c *= (uKnee + (m - uKnee) * 0.22) / m;                // roll off near-white (New Horizons' dish)
-        float side = clamp(dot(normalize(vS + 1e-4) * min(1.0, length(vS)), normalize(uSun.xy + 1e-4)), -1.0, 1.0);
-        float lit = 0.3 + 0.85 * smoothstep(-0.9, 0.9, side) * (0.55 + 0.45 * max(uSun.z, 0.0) + 0.45 * length(uSun.xy));
-        c *= lit * uDim;
-        c = mix(c, c * vec3(1.25, 0.8, 0.55), uWarm);                       // hostile craft: amber cast
-        gl_FragColor = vec4(c, t.a * uOpacity);
-      }`,
-  });
+  const hd = new THREE.Vector3(), tl = new THREE.Vector3();
+  function updateBolts(dt) {
+    let n = 0;
+    for (let i = bolts.length - 1; i >= 0; i--) {
+      const o = bolts[i]; o.t += dt; if (o.t < 0) continue;
+      if (!o.muzzle) { o.muzzle = true; flash(o.a, { size: 0.012, peak: 0.3, attack: 16, decay: 140, color: o.color.clone().lerp(new THREE.Color(1, 1, 1), 0.6) }); }
+      const head = o.t * o.speed, tail = Math.max(0, head - o.len);
+      const stop = o.hit ? o.dist : o.dist * 1.6;
+      let fade = 1;
+      if (!o.hit && head > o.dist) fade = Math.max(0, 1 - (head - o.dist) / (o.dist * 0.6)); // a miss fades into the distance
+      if (o.hit && head >= o.dist && !o.struck) {
+        o.struck = true; const p = o.a.clone().addScaledVector(o.dir, o.dist);
+        hitSpark(p, 0.09); flash(p, { size: 0.014, peak: 0.28, attack: 20, decay: 220, color: [1, 0.95, 0.88] }); lightUp(p, 0.15, 1.2);
+      }
+      if (tail >= stop || fade <= 0) { bolts.splice(i, 1); continue; }
+      hd.copy(o.a).addScaledVector(o.dir, Math.min(head, stop)); tl.copy(o.a).addScaledVector(o.dir, tail);
+      aA.setXYZ(n, tl.x, tl.y, tl.z); aB.setXYZ(n, hd.x, hd.y, hd.z);
+      aC.setXYZW(n, o.color.r, o.color.g, o.color.b, fade * Math.min(1, o.t * 60)); aW.setX(n, o.w); n++;
+    }
+    bGeo.instanceCount = n;
+    if (n) { aA.needsUpdate = aB.needsUpdate = aC.needsUpdate = aW.needsUpdate = true; }
+    // the shared point light: instant attack, exponential decay (~120 ms)
+    if (lampT >= 0) { lampT += dt; lamp.intensity = lampPeak * Math.exp(-lampT / 0.12); if (lampT > 1) { lampT = -1; lamp.intensity = 0; } }
+    return n > 0 || lampT >= 0;
+  }
+  // ---------- craft: real 3D models (Kenney Space Kit, CC0) with a realistic material pass: gunmetal, dark
+  // panels and carbon PBR lit by the scene's sun and environment, tiny running lights, and a tight engine glow
+  // that follows thrust. The UFO-style run craft is a smooth lens disc modelled here. Until a model loads the
+  // procedural carrier stays visible.
+  const SHIP_FILE = { drone: "drone", fighter: "fighter", pod: "hauler", hostile: "hostile", "vessel-a": "vessel-a", "vessel-b": "vessel-b", "vessel-c": "vessel-c" };
+  const models = {};
+  const gltf = import("three/addons/loaders/GLTFLoader.js").then((m) => new m.GLTFLoader());
+  function model(name) {
+    if (!models[name]) models[name] = gltf.then((l) => l.loadAsync(`assets/fx/ships/${name}.glb`)).then((g) => g.scene).catch(() => null);
+    return models[name];
+  }
+  const dot = (() => { // soft point for lights and engines (a tiny pre-rendered PSF)
+    const c = document.createElement("canvas"); c.width = c.height = 32; const x = c.getContext("2d");
+    const g = x.createRadialGradient(16, 16, 0, 16, 16, 16); g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.18, "rgba(255,255,255,0.55)"); g.addColorStop(0.5, "rgba(255,255,255,0.08)"); g.addColorStop(1, "rgba(255,255,255,0)");
+    x.fillStyle = g; x.fillRect(0, 0, 32, 32); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  })();
+  const pbr = {
+    ours: { metal: [0x40454c, 0.35, 0.58], metalDark: [0x272b30, 0.35, 0.6], dark: [0x0f1012, 0.2, 0.7], metalRed: [0x323840, 0.35, 0.58] },
+    hostile: { metal: [0x2e2b29, 0.35, 0.6], metalDark: [0x1d1b19, 0.35, 0.62], dark: [0x0b0a09, 0.2, 0.7], metalRed: [0x33201c, 0.35, 0.6] },
+  };
+  function materialPass(root, scheme) {
+    const cache = new Map();
+const ONE_SIZE = new Set(["hit", "bolt"]); // already tiny: one file for every tier
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = [].concat(o.material).map((m) => {
+        if (!cache.has(m.name)) {
+          const [col, metal, rough] = (pbr[scheme][m.name] ?? pbr[scheme].metal);
+          cache.set(m.name, new THREE.MeshStandardMaterial({ color: col, metalness: metal, roughness: rough, envMap, envMapIntensity: 0.12, transparent: true, opacity: 0, flatShading: false }));
+        }
+        return cache.get(m.name);
+      });
+      if (o.material.length === 1) o.material = o.material[0];
+      o.castShadow = o.receiveShadow = false;
+    });
+    return [...cache.values()];
+  }
+  function lensDisc() {
+    const prof = [[0, -0.1], [0.5, -0.085], [0.88, -0.03], [1.0, 0.0], [0.9, 0.035], [0.55, 0.08], [0.25, 0.12], [0, 0.125]].map(([x, y]) => new THREE.Vector2(x, y));
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(new THREE.LatheGeometry(prof, 48), new THREE.MeshStandardMaterial({ name: "metal", color: 0x5c6168, metalness: 0.9, roughness: 0.3 })));
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.995, 0.012, 6, 64), new THREE.MeshStandardMaterial({ name: "dark", color: 0x111214 })); rim.rotation.x = Math.PI / 2; g.add(rim);
+    return Promise.resolve(g);
+  }
+  const lightSprite = (color, s) => { const m = new THREE.Sprite(new THREE.SpriteMaterial({ map: dot, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: true })); m.scale.setScalar(s); return m; };
   const crafts = new Set();
-  // Puts the real craft on a procedural group (keeps its motion), hiding the drawn meshes once the image is in.
-  function dress(g, kind, { size = 0.42, dim = 1, warm = 0, engineColor = null, hide = [] } = {}) {
-    const spec = CRAFT[kind]; if (!spec) return g;
-    const mat = craftMat(spec.cell); mat.uniforms.uDim.value = dim * (spec.gain ?? 1); mat.uniforms.uWarm.value = warm; mat.uniforms.uKnee.value = spec.knee ?? 10;
-    const bb = board(mat, size); bb.renderOrder = 4; bb.visible = false;
-    let eng = null;
-    if (spec.engine && engineColor) { eng = glint("glint", engineColor, size * 0.55, 0.9); eng.renderOrder = 5; eng.visible = false; }
-    g.add(bb); if (eng) g.add(eng);
-    const real = { bb, eng, spec, size, ang: null, on: false, age: 0 };
+  function dress(g, kind, { size = 0.4, dim = 1, warm = 0, engineColor = null, hide = [] } = {}) {
+    const hostile = kind === "hostile";
+    const real = { on: false, age: 0, thrust: 0.3, engines: [], lights: [], mats: [], kind, size };
     g.userData.real = real;
-    const apply = () => {
-      if (!tex.craft) return;
-      mat.uniforms.map.value = tex.craft;
-      g.traverse((o) => { if ((o.isMesh || o.isLine) && o !== bb && o !== eng && !o.userData.keep) { o.material = o.material.clone(); o.material.visible = false; } });
+    const src = kind === "ufo" ? lensDisc() : model(SHIP_FILE[kind] ?? "drone");
+    src.then((root) => {
+      if (!root || !g.parent && !g.userData.keepAlive) { if (!root) return; }
+      const m = root.clone(true);
+      real.mats = materialPass(m, hostile ? "hostile" : "ours");
+      if (dim !== 1) real.mats.forEach((x) => x.color.multiplyScalar(dim));
+      const box = new THREE.Box3().setFromObject(m), sz = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
+      const k = size / Math.max(sz.x, sz.y, sz.z);
+      const holder = new THREE.Group();
+      m.position.sub(ctr); holder.add(m); holder.scale.setScalar(k);
+      if (kind !== "ufo") holder.rotation.y = Math.PI; // the kit's noses point -Z; ours fly +Z
+      // lights in the holder's (unscaled) frame, then mapped to the group
+      const half = sz.clone().multiplyScalar(0.5);
+      const run = hostile ? new THREE.Color(0.85, 0.42, 0.3) : new THREE.Color(0.95, 0.92, 0.86);
+      if (kind === "ufo") {
+        for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2, l = lightSprite(new THREE.Color(0.8, 0.86, 0.95), size * 0.05); l.position.set(Math.cos(a) * size * 0.5, 0, Math.sin(a) * size * 0.5); g.add(l); real.lights.push(l); }
+      } else {
+        for (const sx of [-1, 1]) { const l = lightSprite(hostile ? run : sx < 0 ? new THREE.Color(0.95, 0.75, 0.68) : new THREE.Color(0.75, 0.95, 0.82), size * 0.05); l.position.set(sx * half.x * k * 0.96, 0, 0); g.add(l); real.lights.push(l); }
+        if (hostile) { const l = lightSprite(new THREE.Color(0.95, 0.4, 0.22), size * 0.06); l.position.set(0, half.y * k * 0.9, half.z * k * 0.6); g.add(l); real.lights.push(l); }
+        const ec = engineColor ? new THREE.Color(engineColor) : new THREE.Color(0.9, 0.93, 1.0);
+        ec.lerp(new THREE.Color(1, 0.97, 0.92), 0.6); // warm white with a hint of colour
+        for (const sx of kind === "pod" ? [0] : [-0.3, 0.3]) { const e = lightSprite(ec, size * 0.09); e.position.set(sx * half.x * k, 0, -half.z * k * 0.98); g.add(e); real.engines.push(e); }
+      }
+      holder.traverse((o) => { if (o.isMesh) o.layers.enable(4); }); // VELOCITY_LAYER (post.js): per-object motion blur
+      g.add(holder); real.holder = holder;
+      g.traverse((o) => { if ((o.isMesh || o.isLine || o.isPoints) && !o.userData.keep && !isInside(o, holder) && !real.lights.includes(o) && !real.engines.includes(o)) { o.material = o.material.clone(); o.material.visible = false; } });
       for (const o of hide) { o.material = o.material.clone(); o.material.visible = false; }
-      bb.visible = true; if (eng && tex.glint) eng.visible = true; real.on = true;
-    };
-    if (tex.craft) apply(); else loads.craft.then(apply);
+      real.on = true;
+    });
     crafts.add(g);
     return g;
   }
-  const pa = new THREE.Vector3(), pb = new THREE.Vector3(), fwd = new THREE.Vector3(), wp = new THREE.Vector3(), q = new THREE.Quaternion();
-  function updateCrafts(dt) {
+  const isInside = (o, root) => { for (let p = o; p; p = p.parent) if (p === root) return true; return false; };
+  // Thrust drives the engine glow (brighter accelerating, dim cruising); running lights glow slowly, never strobe.
+  function updateCrafts(dt, t) {
     for (const g of crafts) {
       if (!g.parent) { crafts.delete(g); continue; }
       const r = g.userData.real; if (!r.on) continue;
-      r.age += dt; const fade = reduced ? 1 : Math.min(1, r.age / 0.4); // fade in, never pop
-      r.bb.material.uniforms.uOpacity.value = fade * fade * (3 - 2 * fade);
-      g.getWorldPosition(wp); g.getWorldQuaternion(q);
-      fwd.set(0, 0, 1).applyQuaternion(q);
-      pa.copy(wp).project(camera); pb.copy(wp).addScaledVector(fwd, 0.5).project(camera);
-      const dx = (pb.x - pa.x) * camera.aspect, dy = pb.y - pa.y, len = Math.hypot(dx, dy);
-      // Facing craft (hostiles, UFOs) stay upright with a little of the group's bank; the rest point along their path.
-      const goal = r.spec.face ? (g.rotation.z || 0) * 0.6 : len > 0.002 ? Math.atan2(dy, dx) - r.spec.nose : (r.ang ?? 0);
-      if (r.ang == null) r.ang = goal;
-      let d = goal - r.ang; d = Math.atan2(Math.sin(d), Math.cos(d));
-      r.ang += d * (1 - Math.exp(-dt * 7)); // heading turns smoothly, never snaps
-      r.bb.material.uniforms.uRot.value = r.ang;
-      if (r.eng) {
-        const a = r.ang + r.spec.nose;
-        r.eng.material.uniforms.uOff.value.set(-Math.cos(a) * r.size * r.spec.engine, -Math.sin(a) * r.size * r.spec.engine);
-        r.eng.material.uniforms.uRot.value = a;
-      }
+      r.age += dt;
+      const fade = reduced ? 1 : Math.min(1, r.age / 0.6), e = fade * fade * (3 - 2 * fade);
+      for (const m of r.mats) { m.opacity = e; m.transparent = e < 1; m.depthWrite = e >= 1; }
+      const thr = Math.max(0, Math.min(1, r.thrust ?? 0.3));
+      r.engines.forEach((s) => { s.material.opacity = e * (0.25 + 0.6 * thr); s.scale.setScalar(r.size * (0.06 + 0.05 * thr)); });
+      r.lights.forEach((s, i) => { s.material.opacity = e * (reduced ? 0.6 : 0.45 + 0.3 * Math.sin(0.9 * t - 0.6 * i)); });
     }
   }
-
   // Persistent soft beam (a UFO's light, a beacon): returns the mesh; call mesh.userData.set(a, b, w) and set opacity.
   function beam(color, width) { const m = beamMesh(color, width); m.material.uniforms.uOpacity.value = 0; return m; }
 
+  let clockT = 0;
   function update(dt) {
+    clockT += dt;
     sunView.copy(sun).transformDirection(camera.matrixWorldInverse);
     shared.uSun.value.copy(sunView);
     for (let i = live.length - 1; i >= 0; i--) if (!live[i](dt)) live.splice(i, 1);
-    updateCrafts(dt);
-    return live.length > 0;
+    const b = updateBolts(dt);
+    updateCrafts(dt, clockT);
+    busyB = b;
+    return live.length > 0 || b;
   }
+  let busyB = false;
 
-  const api = { ready, loads, boom, flash, bolt, beam, glint, dress, update, meteorTrail, cometBody, ribbon, texture: (n) => tex[n] ?? null, get busy() { return live.length > 0; } };
+  const api = { _bMesh: bMesh, _bolts: bolts, _bGeo: bGeo, _bMat: bMat, ready, loads, boom, flash, bolt, beam, glint, dress, update, meteorTrail, cometBody, ribbon, texture: (n) => tex[n] ?? null, get busy() { return live.length > 0 || busyB; } };
   return api;
 }

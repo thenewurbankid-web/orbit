@@ -49,6 +49,22 @@ checks each SHA-256 against `helper/latest.json`, restarts), logs, forget this b
 folder, or `curl -fsSL https://thenewurbankid-web.github.io/orbit/uninstall.sh | sh` /
 `irm https://thenewurbankid-web.github.io/orbit/uninstall.ps1 | iex`.
 
+## Clipboard → agent
+
+Orbit's clipboard (the vendored [pip-clipboard](../vendor/pip-clipboard/VENDOR.md) widget) sends cards to an
+agent through `POST /api/clipboard/send`, behind the same access rules as everything else (this
+computer's page, or the connected website with its token; other websites are refused).
+
+`multipart/form-data`: `companyId`, optional `agentId` (default: the project's point of contact), `mode`
+(`task`, or `comment` on the agent's current task), `message` (one line), repeated `link`, `text`
+(≤ 8000 chars) and `file` (≤ 10, each ≤ Paperclip's `MAX_ATTACHMENT_BYTES`, 10 MB unless
+`PAPERCLIP_ATTACHMENT_MAX_BYTES` says otherwise), optional `meta` JSON, and `dryRun=true` to only
+describe what would happen. Files must be images (png, jpeg, gif, webp, heic), PDF, text or code (sent
+as text/plain), JSON, CSV, Markdown, HTML or zip; SVG and anything else is refused. Names are cleaned
+(no folders or reserved characters). Files stay in memory and go to Paperclip with
+`POST /api/companies/:companyId/issues/:issueId/attachments`; links and text go into the task
+description or comment; then the agent is woken. The answer names the agent, the issue and a link.
+
 ## Who can use it
 
 - **This computer's own page** (`http://127.0.0.1:4320`, same origin): no key.
