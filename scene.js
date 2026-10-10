@@ -1542,6 +1542,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       ...(view.level !== "sky" && view.company && store.mode !== "demo" ? [(() => { const c = (store.board?.companies ?? []).find((x) => x.prefix === view.company); return { id: "work", label: (c?.paused ? "⏸ " : "⌘ ") + (narrow ? "cmd" : "command"), on: !!c?.paused }; })()] : []),
       { id: "project", label: narrow ? "+" : "+ project" },
       ...floatItem(),
+      { id: "game", label: "game" },
       { id: "help", label: "?" },
     ];
     x.font = `${narrow && !compact ? 400 : 300} ${compact ? 10 : narrow ? 12 : 11}px ${HUDF}`; x.textBaseline = "middle"; x.textAlign = "left";
@@ -2915,6 +2916,16 @@ export async function startScene({ canvas, kbd, reduced }) {
     zoomLevels();
   }, { passive: false });
   // The bottom strip's actions, shared by taps, the keyboard toolbar and the settings panel.
+  // Game mode: its own full-screen canvas; the board pauses underneath and resumes untouched.
+  let game = null;
+  async function openGameMode() {
+    if (game) return;
+    game = {}; paused = true;
+    try {
+      const m = await import("./game-mode.js");
+      game = m.openGame({ doc: host.doc, win: host.win, small: tier.mobile || tier.name === "low", onExit: () => { game = null; paused = false; dirty = true; last = performance.now(); kick(); } });
+    } catch (e) { console.error("[game]", e); game = null; paused = false; kick(); }
+  }
   async function stripAction(id) {
     if (id === "refresh") { blip(880); try { await act("refresh"); } catch (err) { notice = err.message; } return; }
     if (id === "interval") { blip(520); const cur = store.board?.intervalSec ?? 15; const nx = INTERVALS.find((v) => v > cur) ?? INTERVALS[0]; try { await act("config", { intervalSec: nx }); } catch (err) { notice = err.message; } drawPanel(); return; }
@@ -2924,6 +2935,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (id === "project") { store.emit("openConnect"); return; }
     if (id === "work") { openWorkPanel(view.company); return; }
     if (id === "help") { store.emit("openHelp"); return; }
+    if (id === "game") { openGameMode(); return; }
     if (id === "float") { blip(600); floater_.toggle(); return; }
     if (id === "pair") { if (store.mode === "host") { if (store.pair.state === "idle") startPairing(); openSlate("pair"); } else if (store.mode === "remote") openSlate("link", store.link.state !== "connected"); return; }
     if (id === "settings") { openSettings(); return; }
@@ -3000,6 +3012,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (k === "," ) { openSettings(); return; }
     if (k === "?") { e.preventDefault(); sc.open(); return; }
     if (k === "l" || k === "L") toggleList(true);
+    if (k === "g" || k === "G") { openGameMode(); return; }
   });
   hostOn("keyup", (e) => { held.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
   hostOn("blur", () => held.clear());
@@ -3034,7 +3047,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   let stripFocus = null;
   const toolbar = (() => {
     const t = host.doc.createElement("div"); t.setAttribute("role", "toolbar"); t.setAttribute("aria-label", "Board controls");
-    const items = [["refresh", "Refresh now"], ["interval", "Change refresh interval"], ["view", "Change view"], ["sound", "Sound on or off"], ["vol", "Change volume"], ["blur", "Motion blur on or off"], ["float", "Float window"], ["project", "Add a project"], ["settings", "Open settings"], ["help", "Help"]];
+    const items = [["refresh", "Refresh now"], ["interval", "Change refresh interval"], ["view", "Change view"], ["sound", "Sound on or off"], ["vol", "Change volume"], ["blur", "Motion blur on or off"], ["float", "Float window"], ["project", "Add a project"], ["settings", "Open settings"], ["game", "Game mode"], ["help", "Help"]];
     for (const [id, label] of items) {
       const b = host.doc.createElement("button"); b.type = "button"; b.className = "vh"; b.textContent = label; b.setAttribute("aria-label", label);
       b.addEventListener("focus", () => { stripFocus = id; wakePanel(); }); b.addEventListener("blur", () => { stripFocus = null; drawPanel(); });

@@ -695,6 +695,33 @@ async function paperclipUp() {
 }
 const access = createAccess({ readJson, writeJson, port: PORT, config: () => config, keyOk, notify: notifyText });
 
+// Space data the browser can't fetch itself (these hosts send no CORS headers): the game asks the helper, which
+// fetches only from this allow-list, caches answers for 30 min, and caps size and time. GET /api/space?src=…&…
+const SPACE = {
+  horizons: "https://ssd.jpl.nasa.gov/api/horizons.api",
+  sbdb: "https://ssd-api.jpl.nasa.gov/sbdb.api",
+  cad: "https://ssd-api.jpl.nasa.gov/cad.api",
+  gaia: "https://gea.esac.esa.int/tap-server/tap/sync",
+  exoplanets: "https://exoplanetarchive.ipac.caltech.edu/TAP/sync",
+};
+const spaceCache = new Map();
+async function spaceFetch(params) {
+  const src = params.get("src"), base = SPACE[src];
+  if (!base) throw Object.assign(new Error(`Unknown source. Allowed: ${Object.keys(SPACE).join(", ")}`), { status: 400 });
+  const q = new URLSearchParams(params); q.delete("src"); q.delete("key");
+  const query = q.toString();
+  if (query.length > 4000) throw Object.assign(new Error("Query too long"), { status: 400 });
+  const target = (process.env.ORBIT_SPACE_TEST_BASE ? process.env.ORBIT_SPACE_TEST_BASE + new URL(base).pathname : base) + (query ? "?" + query : "");
+  const hit = spaceCache.get(target);
+  if (hit && Date.now() - hit.at < 30 * 60e3) return hit;
+  const r = await fetch(target, { headers: { Accept: "application/json, text/csv;q=0.9, */*;q=0.5", "User-Agent": `Orbit/${VERSION}` }, signal: AbortSignal.timeout(30000) });
+  const body = Buffer.from(await r.arrayBuffer());
+  if (body.length > 8e6) throw Object.assign(new Error("Answer too large"), { status: 502 });
+  const out = { at: Date.now(), status: r.status, type: r.headers.get("content-type") ?? "application/octet-stream", body };
+  if (r.ok) { spaceCache.set(target, out); if (spaceCache.size > 300) spaceCache.delete(spaceCache.keys().next().value); }
+  return out;
+}
+
 // The board page itself: from phone/ next to the code (a developer copy), else the published site,
 // cached in the data folder so it also opens offline. Only the allow-listed paths above reach here.
 const WEB_DIR = join(here, "phone");
@@ -748,12 +775,12 @@ const server = createServer(async (req, res) => {
         const types = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css", svg: "image/svg+xml", png: "image/png", webmanifest: "application/manifest+json" };
         try { return send(res, 200, types[page.split(".").pop()], await readFile(await webFile(page))); } catch { return send(res, 404, "text/plain", "not found"); }
       }
-      const asset = /^\/assets\/(intro\.mp4|intro-poster\.jpg|help\/(?:overview|planet|chat)\.jpg|planets\/(?:mars|mercury|moon|earth|earth-clouds|jupiter|ice)(?:-1k)?\.jpg|fx\/(?:flare|glint|streak|laser|steel|aurora|lightning|comet|meteor|plasma)(?:-sm)?\.jpg|fx\/hit\.jpg|fx\/bolt\.png|fx\/blast(?:-sm)?\.webp|fx\/ships\/(?:drone|fighter|hauler|hostile|vessel-a|vessel-b|vessel-c)\.glb)$/.exec(p);
+      const asset = /^\/assets\/(intro\.mp4|intro-poster\.jpg|help\/(?:overview|planet|chat)\.jpg|planets\/(?:mars|mercury|moon|earth|earth-clouds|jupiter|ice)(?:-1k)?\.jpg|fx\/(?:flare|glint|streak|laser|steel|aurora|lightning|comet|meteor|plasma)(?:-sm)?\.jpg|fx\/hit\.jpg|fx\/bolt\.png|fx\/blast(?:-sm)?\.webp|fx\/ships\/(?:drone|fighter|hauler|hostile|vessel-a|vessel-b|vessel-c)\.glb|space\/(?:venus|saturn|uranus|neptune|sun)(?:-1k)?\.jpg|space\/saturn-ring\.png|space\/stars\.json)$/.exec(p);
       if (asset) {
         // Byte ranges, so Safari and iOS can play the intro video.
         const f = await webFile("assets/" + asset[1]);
         const size = (await fstat(f)).size;
-        const type = asset[1].endsWith(".mp4") ? "video/mp4" : asset[1].endsWith(".webm") ? "video/webm" : asset[1].endsWith(".webp") ? "image/webp" : asset[1].endsWith(".png") ? "image/png" : asset[1].endsWith(".glb") ? "model/gltf-binary" : "image/jpeg";
+        const type = asset[1].endsWith(".mp4") ? "video/mp4" : asset[1].endsWith(".webm") ? "video/webm" : asset[1].endsWith(".webp") ? "image/webp" : asset[1].endsWith(".png") ? "image/png" : asset[1].endsWith(".glb") ? "model/gltf-binary" : asset[1].endsWith(".json") ? "application/json" : "image/jpeg";
         const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
         if (m) {
           const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
@@ -775,6 +802,7 @@ const server = createServer(async (req, res) => {
       if (p === "/api/board") return json(res, 200, boardView());
       if (p === "/api/llm") return json(res, 200, await llm.status());
       if (p === "/api/llm/models") return json(res, 200, { models: await llm.models() });
+      if (p === "/api/space") { try { const r = await spaceFetch(url.searchParams); return send(res, r.status, r.type, r.body); } catch (e) { return json(res, e.status ?? 502, { error: e.message }); } }
       if (p === "/api/log") {
         let log = await readLog();
         const company = url.searchParams.get("company");

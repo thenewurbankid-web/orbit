@@ -16,6 +16,7 @@ export const KEYMAP = [
   ["I", "activity panel"],
   [", / S", "settings (the station)"],
   ["L", "list view"],
+  ["G", "game mode: fly the real solar system"],
   ["?", "these shortcuts"],
 ];
 
