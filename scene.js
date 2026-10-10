@@ -8,7 +8,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { BokehPass } from "three/addons/postprocessing/BokehPass.js";
-import { openConnectPanel, openHelpPanel, companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, messagesFor, toggleList, startPairing, applyAnswer, stopPairing, answerQuestion, copyText, helperBrief, helperAsk, helperLines, helperState } from "./app.js";
+import { openConnectPanel, openHelpPanel, companyProgress, store, act, OPEN, STATUS, ago, allQuestions, summary, messagesFor, toggleList, startPairing, applyAnswer, stopPairing, answerQuestion, copyText, helperBrief, helperAsk, helperLines, helperState, llmOn, llmName } from "./app.js";
 import * as fx from "./fx.js";
 import { bakePlanet, bakeNebula, NEBULA_CENTRES, KIND } from "./planets.js";
 
@@ -91,6 +91,7 @@ import { createFlares } from "./flares.js";
 import { MotionBlurPass, FinishShader, VELOCITY_LAYER } from "./post.js";
 import { createFleet } from "./fleet.js";
 import { shortcutsOverlay, KEYMAP } from "./keys.js";
+import { startTour, tourRunning } from "./tour.js";
 import { createStation } from "./station.js";
 import { settings as SET, onChange as onSettings, save as saveSettingsStore, openSettingsPanel, quiet as quietHours } from "./settings.js";
 import { host, hostOn, onHostChange } from "./host.js";
@@ -141,7 +142,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   const cancelRaf = (id) => { try { if (rafWin) rafWin.cancelAnimationFrame(id); else clearTimeout(id); } catch { /* window closed */ } };
   let dirty = true, paused = false, rafId = 0, last = performance.now(), clock = 0, activeUntil = performance.now() + 3000, lastRender = 0;
   // ---------------- renderer, tier, passes ----------------
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", alpha: false });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "default", alpha: false }); // not "high-performance": that wakes the discrete GPU for a board left open all day
   const tier = fx.detectTier(renderer);
   const dpr = Math.min(devicePixelRatio || 1, tier.dpr);
   let pr = dpr; // the pixel ratio in use: capped while floating
@@ -151,6 +152,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   // Visual settings (the settings panel writes these; they apply live).
   const VIS = { blur: !tier.mobile || tier.name !== "low", bloom: 1, dof: false, grain: true, fovKick: true };
   let speedK = 0, baseFov = 52, lastInput = performance.now(), batterySaver = false;
+  const busySky = () => SET.display.busySky; // off = calm: no hostiles or pods, one storm per planet, orbit lines only on the focused planet
   const labelGate = (near) => (SET.display.labels === "none" ? 0 : SET.display.labels === "near" ? (near ? 1 : 0) : 1);
   hostOn("pointerdown", () => { lastInput = performance.now(); }, true);
   hostOn("keydown", () => { lastInput = performance.now(); }, true);
@@ -160,7 +162,18 @@ export async function startScene({ canvas, kbd, reduced }) {
   battery?.then((b) => b?.addEventListener?.("chargingchange", updateBattery));
   renderer.toneMappingExposure = EXPOSURE;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); toggleList(true); });
+  // A lost context usually means the GPU was overloaded or reset (the "froze my computer" case). Remember it so the
+  // next load starts a tier lower (fx.detectTier), and reload once the browser hands the context back.
+  canvas.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault(); toggleList(true);
+    try { localStorage.setItem("orbit.gpuLost", String((Number(localStorage.getItem("orbit.gpuLost")) || 0) + 1)); } catch {}
+  });
+  canvas.addEventListener("webglcontextrestored", () => location.reload());
+  // Pixel budget: about 2560×1600 drawn pixels. A full-screen 4K/5K canvas at ratio 2 is 15M+ pixels per frame
+  // through bloom and motion blur, which is what brought desktops to a halt. `slowK` drops further when frames run slow.
+  const PX_BUDGET = 2560 * 1600;
+  let slowK = 1;
+  const slowWin = { frames: 0, ms: 0 };
 
   const world = new THREE.Scene();
   world.background = new THREE.Color(0x000000);
@@ -566,7 +579,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       co.ringPct = companyProgress(c) ?? 0;
       co.label.position.copy(co.center).add(new THREE.Vector3(0, -co.radius - 2.0, 0));
       const cp = companyProgress(c);
-      const cpText = cp == null ? "" : host.win.innerWidth < 640 ? `~${cp}% overall` : `~${cp}% overall · rough local-model estimate`;
+      const cpText = cp == null ? "" : host.win.innerWidth < 640 ? `~${cp}% overall` : `~${cp}% overall · rough model estimate`;
       if (cpText !== co.pctText) {
         if (co.pct) co.group.remove(co.pct);
         co.pctText = cpText;
@@ -808,7 +821,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   function openSettings() {
     if (settingsPanel) return;
     settingsPanel = openSettingsPanel({
-      doc: host.doc, snd, keymap: KEYMAP, store, intervals: INTERVALS, version: "2026.10",
+      doc: host.doc, snd, keymap: KEYMAP, store, act, intervals: INTERVALS, version: "2026.10",
       returnFocus: toolbarSettingsButton(),
       onClose: () => { settingsPanel = null; if (view.level === "station") goSky(); },
       actions: {
@@ -826,15 +839,16 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
   function saveSettings() { SET.motion.blur = VIS.blur; saveSettingsStore(); }
   // Apply settings live.
-  let hideNamesWas = SET.privacy.hideNames;
+  let hideNamesWas = SET.privacy.hideNames, busyWas = SET.display.busySky;
   function applySettings() {
     updateBattery();
     MOTION.tempo = SET.motion.tempo;
     VIS.blur = SET.motion.blur; VIS.fovKick = SET.motion.fovKick;
     VIS.bloom = SET.visual.bloom; VIS.dof = SET.visual.dof; VIS.grain = SET.visual.grain;
     const want = SET.visual.battery ? 1 : dpr; // the quality tier itself lives in localStorage "orbit.tier" (fx.detectTier) and applies on reload
-    if (Math.abs(renderer.getPixelRatio() - want) > 0.01 && !host.mode) { pr = want; renderer.setPixelRatio(pr); layout(); }
+    if (Math.abs(pr - want) > 0.01 && !host.mode) { pr = want; layout(); }
     if (SET.privacy.hideNames !== hideNamesWas) { hideNamesWas = SET.privacy.hideNames; for (const k of [...companyObjs.keys()]) rebuildPlanet(k); }
+    if (SET.display.busySky !== busyWas) { busyWas = SET.display.busySky; syncHostiles(false); syncPersistent(); }
     drawPanel(); kick();
   }
   onSettings(applySettings);
@@ -1195,8 +1209,8 @@ export async function startScene({ canvas, kbd, reduced }) {
   }
 
   async function estimate(identifier) {
-    if (!SET.data.eta) return;
-    try { await act("eta", { issue: identifier }); notice = `Estimating ${identifier} with the local model…`; }
+    if (!SET.data.eta || !llmOn()) return;
+    try { await act("eta", { issue: identifier }); notice = `Estimating ${identifier} with ${llmName()}…`; }
     catch (e) { notice = "Estimate failed: " + e.message; }
     drawSlate();
   }
@@ -1204,7 +1218,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   function etaLine(id) {
     const e = store.board?.eta?.[id];
     if (!e || e.pct == null) return null;
-    return `~${e.pct}% · ETA ${e.eta} · rough local-model estimate, estimated ${ago(e.at)}`;
+    return `~${e.pct}% · ETA ${e.eta} · rough model estimate, estimated ${ago(e.at)}`;
   }
 
   function buildDoc(W, now) {
@@ -1318,7 +1332,7 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (e?.done?.length) body.push({ t: "text", text: "Done: " + e.done.join("; "), color: C.ink2, size: 13, max: 6 });
       if (e?.left?.length) body.push({ t: "text", text: "Left: " + e.left.join("; "), color: C.ink2, size: 13, max: 6 });
       if (e?.error && (!e.at || e.errorAt > e.at)) body.push({ t: "text", text: "Last estimate failed: " + e.error, color: C.ember, size: 13 });
-      body.push({ t: "tiles", tiles: [{ label: running ? "⌖ estimating…" : el ? "⌖ estimate again" : "⌖ estimate (local model)", disabled: running, tap: () => estimate(i.identifier) }] });
+      if (llmOn()) body.push({ t: "tiles", tiles: [{ label: running ? "⌖ estimating…" : el ? "⌖ estimate again" : "⌖ estimate", disabled: running, tap: () => estimate(i.identifier) }] });
       // Questions on this issue condense here.
       for (const { q } of allQuestions().filter((x) => x.issue.id === i.id)) {
         body.push({ t: "rule" });
@@ -1348,15 +1362,15 @@ export async function startScene({ canvas, kbd, reduced }) {
           ] });
           if (p.rejectRequiresReason) body.push({ t: "text", text: "Rejecting needs a reason: write it below first.", size: 12.5, color: C.ink2 });
         }
-        // Local model briefing condenses under the question.
-        if (!helperState.has(q.id)) helperBrief(q.id);
+        // The model briefing condenses under the question, only when asked for (nothing is sent to a model by itself).
         body.push({ t: "gap", h: 8 });
+        if (llmOn() && !helperState.has(q.id)) body.push({ t: "tiles", tiles: [{ label: `✦ brief me (${llmName()})`, tone: "ice", tap: () => helperBrief(q.id) }] });
         for (const l of helperLines(q.id)) {
           if (l.kind === "meter") body.push({ t: "meter", pct: l.pct }, { t: "text", text: l.text, size: 11.5, color: C.ink3 });
           else body.push({ t: "text", text: l.text, size: l.kind === "head" ? 12 : 13.5, weight: l.kind === "head" || l.kind === "q" ? 600 : 400, color: { head: C.ice, dim: C.ink3, amber: C.amber, q: C.ink, a: C.frost, body: C.ink2 }[l.kind] });
         }
         const asking = slate.editing?.kind === "helper" && slate.editing.key === q.id;
-        body.push({ t: "field", text: asking ? kbd.value : "", placeholder: "Tap to ask the local model about this", editing: asking, tap: () => startEditing({ kind: "helper", key: q.id }) });
+        if (llmOn() && helperState.has(q.id)) body.push({ t: "field", text: asking ? kbd.value : "", placeholder: "Tap to ask the model about this", editing: asking, tap: () => startEditing({ kind: "helper", key: q.id }) });
         body.push({ t: "gap", h: 6 }, { t: "text", text: "Your answer", size: 12, color: C.amber, weight: 600 });
         const editing = slate.editing?.kind === "answer" && slate.editing.key === q.id;
         body.push({ t: "gap", h: 6 }, { t: "field", text: d.text, placeholder: "Tap to write your own answer", editing, tap: () => startEditing({ kind: "answer", key: q.id }, d.text) });
@@ -2184,7 +2198,7 @@ export async function startScene({ canvas, kbd, reduced }) {
   const ndcTmp = new THREE.Vector2();
   let hostileBadge = null;
   function syncHostiles(instant) {
-    const qs = allQuestions();
+    const qs = busySky() ? allQuestions() : []; // calm sky: questions show on the satellite and the planet alert instead
     const want = new Set(qs.map((x) => x.q.id));
     for (const [id, h] of hostiles) if (!want.has(id) && !h.engaged && h.state !== "dying" && h.state !== "retreat") retreatHostile(h);
     for (const { issue, company, q } of qs) {
@@ -2434,7 +2448,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     const mark = ev.tone === "+" ? "▲" : ev.tone === "-" ? "▼" : "•";
     const show = () => readout(`${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null);
     const incoming = ["comment", "commit", "review", "blocked", "unblocked", "progressUp", "progressDown", "failed"].includes(type);
-    if (incoming) incomingPod(ctx.agentId, ctx.company, false, () => readout(`Incoming · ${ctx.agentId ? agentObjs.get(ctx.agentId)?.data?.name ?? "" : ctx.company ?? ""} · ${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null));
+    if (incoming && busySky()) incomingPod(ctx.agentId, ctx.company, false, () => readout(`Incoming · ${ctx.agentId ? agentObjs.get(ctx.agentId)?.data?.name ?? "" : ctx.company ?? ""} · ${mark} ${ev.text(ctx.label, ctx.detail)}`, ev.tone, ctx.issueId ?? null, ctx.agentId ?? null));
     else show();
     feedAdd({ ts: new Date().toISOString(), company: ctx.company ?? null, text: `${mark} ${ev.text(ctx.label, ctx.detail)}`, tone: ev.tone, issueId: ctx.issueId ?? null, agentId: ctx.agentId ?? null });
     const muted = ctx.company && SET.notify.mutedProjects.includes(ctx.company), q = quietHours();
@@ -2477,7 +2491,7 @@ export async function startScene({ canvas, kbd, reduced }) {
         const i = qs[0], ao = agentObjs.get(i.assigneeAgentId);
         want.set("attack:" + c.prefix, { label: `${i.identifier} · waiting on you`, issueId: i.id, make: () => pfx.attack(co.center, co.radius, () => (ao ? ao.pos : co.center), reduced, rfx) });
       }
-      const blocked = c.issues.filter((i) => i.status === "blocked").slice(0, 3);
+      const blocked = c.issues.filter((i) => i.status === "blocked").slice(0, busySky() ? 3 : 1);
       for (const i of blocked) {
         const ao = agentObjs.get(i.assigneeAgentId);
         want.set("storm:" + i.id, { label: `${i.identifier} · blocked`, issueId: i.id, make: () => pfx.storm(co.center, co.radius, dirOnPlanet(co, ao, i.id), reduced, rfx) });
@@ -2604,7 +2618,7 @@ export async function startScene({ canvas, kbd, reduced }) {
     if (store.mode === "remote") { if (store.link.state === "connected") { slate.forced = false; if (slate.kind === "link") closeSlate(); } else if (slate.kind !== "link") openSlate("link", true); else drawSlate(); }
     if (store.mode === "lost") { notice = store.link.error || "Open this page from the QR code on your Mac's board."; openSlate("notice", true); }
   });
-  store.on("mode", (m) => { if (m === "demo") { slate.forced = false; if (slate.kind === "notice" || slate.kind === "link") closeSlate(); notice = ""; syncSky(); drawSummary(); drawPanel(); updateFrame(); } });
+  store.on("mode", (m) => { if (m === "demo") { tourWanted = true; if (!intro.hud || intro.hud.t0 >= 0) tourSoon(1200); slate.forced = false; if (slate.kind === "notice" || slate.kind === "link") closeSlate(); notice = ""; syncSky(); drawSummary(); drawPanel(); updateFrame(); } });
   store.on("demoOut", ({ agentId, company, label }) => sendDrone(agentId, company, label, new Promise((r) => setTimeout(r, 1500))));
   // Intro match-cut hooks: colour grade, forward drift and HUD fade-in.
   const intro = { grade: null, drift: null, hud: store.introPending ? { t0: -1 } : null };
@@ -2622,7 +2636,68 @@ export async function startScene({ canvas, kbd, reduced }) {
     intro.drift = null; intro.reveal = null;
     goCompany(best.prefix, { enter: true }); // one continuous forward move through the star layers, carrying on the flash's motion
   });
-  store.on("introHud", (h) => { intro.hud = h ? { t0: performance.now() } : { t0: -1 }; kick(); });
+  store.on("introHud", (h) => { intro.hud = h ? { t0: performance.now() } : { t0: -1 }; kick(); if (h && tourWanted) tourSoon(2600); });
+
+  // ---------------- guided tour: one step per feature, pointing at the real thing ----------------
+  // Starts by itself the first time the demo opens (after the fly-in); Help → Take the tour replays it on any board.
+  let tourWanted = false;
+  function tourSoon(ms) { tourWanted = false; setTimeout(runTour, reduced ? 0 : ms); }
+  store.on("startTour", () => runTour());
+  function spotOf(pos, r) {
+    const c = pos.clone().project(camera); if (c.z > 1) return null;
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const e = pos.clone().addScaledVector(right, r).project(camera);
+    return { x: (c.x * 0.5 + 0.5) * W, y: (-c.y * 0.5 + 0.5) * H, r: Math.abs((e.x - c.x) * 0.5 * W) };
+  }
+  const plateBox = (pl) => (pl?.visible === false ? null : { ...pl.rect });
+  const stripItem = (id) => { const h = panelPlate.hot.find((q) => q.fn === "panel:" + id); return h ? { x: panelPlate.rect.x + h.x, y: panelPlate.rect.y + h.y, w: h.w, h: h.h } : null; };
+  const domBox = (sel) => { const el = host.doc.querySelector(sel); if (!el) return null; const r = el.getBoundingClientRect(); return r.width ? { x: r.left, y: r.top, w: r.width, h: r.height } : null; };
+  const avoidUi = () => [slate.plate.visible && slate.kind ? slate.area : null, panelPlate.rect, sumPlate.rect];
+  function runTour() {
+    if (tourRunning() || !store.board) return;
+    const comps = (store.board.companies ?? []).filter((c) => companyObjs.has(c.prefix));
+    if (!comps.length) return;
+    const issues = comps.flatMap((c) => c.issues.filter((i) => issueObjs.has(i.id)).map((i) => ({ ...i, company: c.prefix })));
+    const co = comps.find((c) => store.agents.some((a) => a.company === c.prefix && agentObjs.has(a.id))) ?? comps[0];
+    const agent = store.agents.filter((a) => a.company === co.prefix && agentObjs.has(a.id)).sort((a, b) => (b.live ? 1 : 0) - (a.live ? 1 : 0))[0];
+    const work = issues.find((i) => i.company === co.prefix && i.status === "in_progress") ?? issues.find((i) => OPEN.includes(i.status));
+    const asked = () => allQuestions().find((x) => issueObjs.has(x.issue.id))?.issue;
+    const blocked = issues.find((i) => i.status === "blocked");
+    const companyAt = (p) => () => { const c = companyObjs.get(p); return c && spotOf(c.center, c.radius); };
+    const issueAt = (id) => () => { const io = issueObjs.get(id); return io && !io.hidden ? spotOf(io.sprite.position, 0.5) : null; };
+    const demoShow = (kind) => (store.mode === "demo" ? act("show", { kind }).catch(() => {}) : Promise.resolve());
+    const peekStation = () => { view = { level: "station", company: null, agent: null, issue: null }; flyTo(station.group.position.clone(), 9); closeSlate(); };
+    const steps = [
+      { title: "Your projects, as a solar system", enter: () => goSky(), delay: 900,
+        text: ["Each planet is one Paperclip project. Its moons are the agents working on it and the small ships around them are issues.", "Drag to look around, scroll or pinch to zoom, double-tap to go back."] },
+      { title: "The numbers that matter", target: () => plateBox(sumPlate), enter: () => goSky(),
+        text: ["Across the top: agents working right now, issues in progress, issues blocked, and questions waiting on you.", "The top right shows the rough overall progress and the time."] },
+      { title: `A planet: ${co.name}`, target: companyAt(co.prefix), enter: () => goCompany(co.prefix), delay: 1200,
+        text: ["Tap a planet to fly in. The ring around it fills as its issues get done.", "Long-press a planet to disconnect that project."] },
+      agent && { title: `A moon: ${agent.name}`, target: () => { const ao = agentObjs.get(agent.id); return ao && spotOf(ao.pos, ao.size); }, avoid: avoidUi, enter: () => goAgent(agent.id), delay: 1200,
+        text: ["Each moon is an agent. A glowing moon with a UFO beam is running right now.", "Tapping a moon opens its log on the side: what it read, ran and wrote. Type below it to message the agent; it arrives as a comment on its issue."] },
+      work && { title: `An issue: ${work.identifier}`, target: issueAt(work.id), avoid: avoidUi, enter: () => goIssue(work.id), delay: 1200,
+        text: ["Each small ship is an issue, orbiting the agent assigned to it. The panel shows its status, latest comment and history.", "The thin arc on its orbit is a rough % done. Estimates need a language model (Settings → Language model); none is connected by default."] },
+      { title: "Questions waiting on you", target: () => { const q = asked(); return q ? issueAt(q.id)() : plateBox(sumPlate); }, avoid: avoidUi,
+        enter: () => demoShow("question").then(() => { const q = asked(); if (q) goIssue(q.id); else goSky(); }), delay: 1200,
+        text: ["When an agent needs a decision, its ship blinks amber and the count goes up in “waiting on you”.", "Open it and pick an answer; it goes straight back to the agent. If sending fails, the question stays open."] },
+      blocked && { title: "Blocked and stalled work", target: issueAt(blocked.id), enter: () => goCompany(blocked.company), delay: 1200,
+        text: [`${blocked.identifier} is blocked, so a storm sits over its planet. A moon iced over has had no update for 2 hours.`, "Settings → Display → Busy sky shows more storms, every orbit line and the hostile ships for questions."] },
+      { title: "Things happening", enter: () => { goSky(); demoShow("events"); }, delay: 900,
+        text: ["UFO: an agent started a run. Meteor: an issue is done. Comet: a new issue. Aurora: good news. Tremor: an estimate dropped.", "Every event is also written to the activity feed."] },
+      { title: "Alerts", target: () => domBox(".alertbar.on"), enter: () => demoShow("alert"),
+        text: ["Red alert: something critical (runs failing, high-priority work blocked for long, Paperclip down). Amber: a warning, like a project with no progress for 4 hours.", "Tap the banner to jump there and acknowledge. Sounds, quiet hours and per-project mute are in Settings."] },
+      { title: "Activity feed", target: () => plateBox(handlePlate),
+        text: ["The ACTIVITY tab on the right edge slides in everything that happened, newest first. Tap a line to fly to it."] },
+      { title: "Clipboard", target: () => domBox(".orbit-clip-toggle"),
+        text: ["Drop or paste screenshots, files, links and text here.", "A card's ⋯ menu has Send to agent: pick the project and agent, add a line, and press Send."] },
+      { title: "The control strip", target: () => plateBox(panelPlate),
+        text: ["Refresh and how often · view: switch to a plain list · pair phone: follow the board on your phone by QR · sound and volume · + project · float: pop the board into a small always-on-top window · ?: help."] },
+      { title: "Settings", target: () => spotOf(station.group.position, 3), enter: peekStation, delay: 1400,
+        text: ["The station holds Settings: tap it, or press the comma key. Sound, alerts, labels, Busy sky, quality, camera, and the language model for estimates.", "Replay this tour any time from Help (?)."] },
+    ].filter(Boolean);
+    startTour({ doc: host.doc, win: host.win, steps, onEnd: () => kick() });
+  }
   function updateIntro(now, dt) {
     const g = intro.grade;
     if (g) {
@@ -2681,14 +2756,16 @@ export async function startScene({ canvas, kbd, reduced }) {
     svgFrame.setCompact(compact);
     const wasPortrait = portrait;
     portrait = W / H < 0.85;
+    const drawPr = Math.max(0.6, Math.min(pr, Math.sqrt(PX_BUDGET / (W * H))) * slowK);
+    if (Math.abs(renderer.getPixelRatio() - drawPr) > 0.01) { renderer.setPixelRatio(drawPr); composer.setPixelRatio?.(drawPr); }
     renderer.setSize(W, H, false);
     composer.setSize(W, H);
     camera.aspect = W / H;
     baseFov = portrait ? 62 : 52; camera.fov = baseFov;
     ortho.left = 0; ortho.right = W; ortho.top = 0; ortho.bottom = -H; ortho.updateProjectionMatrix();
     film.uniforms.uAspect.value = W / H;
-    film.uniforms.uRes.value.set(W * pr, H * pr);
-    finish.uniforms.uRes.value.set(W * pr, H * pr);
+    film.uniforms.uRes.value.set(W * drawPr, H * drawPr);
+    finish.uniforms.uRes.value.set(W * drawPr, H * drawPr);
     const safeTop = 8, gut = 16;
     fm = frameMetrics(W, H, null, compact);
     void safeTop;
@@ -3188,7 +3265,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       ao.glow.scale.setScalar(ao.size * 2.4);
       const show = labelGate(true) > 0 && lvl !== "sky" && ao.company === view.company && (!focusMoon || ao.id === focusMoon || ao.id === view.agent) ? 0.95 : 0;
       ao.label.material.opacity += (show - ao.label.material.opacity) * easeK(dt, 7);
-      ao.orbitLine.material.opacity += ((ao.company === view.company ? 0.13 : 0.08) - ao.orbitLine.material.opacity) * easeK(dt, 3); // v1: 0.09
+      ao.orbitLine.material.opacity += ((ao.company === view.company ? 0.13 : busySky() ? 0.08 : 0) - ao.orbitLine.material.opacity) * easeK(dt, 3); // v1: 0.09
+      ao.orbitLine.visible = ao.orbitLine.material.opacity > 0.003;
     }
     for (const io of issueObjs.values()) {
       satellitePos(io, clock, io.sprite.position, dt);
@@ -3211,7 +3289,8 @@ export async function startScene({ canvas, kbd, reduced }) {
       io.sprite.scale.setScalar(io.size * (io.status === "blocked" ? 0.9 : 1.15));
       const near = (lvl === "agent" || lvl === "issue") && (io.hostAgent?.id === view.agent || io.id === view.issue) || (lvl === "company" && io.data.company === view.company && (!fm.phone || revealing));
       io.label.material.opacity += ((near && labelGate(true) ? 0.9 : 0) - io.label.material.opacity) * easeK(dt, 7);
-      io.orbit.material.opacity += ((near ? 0.09 : 0.035) - io.orbit.material.opacity) * easeK(dt, 3);
+      io.orbit.material.opacity += ((near ? 0.09 : busySky() || io.data.company === view.company ? 0.035 : 0) - io.orbit.material.opacity) * easeK(dt, 3);
+      io.orbit.visible = io.orbit.material.opacity > 0.003;
       io.arc.material.opacity += ((near ? 0.5 : 0.2) - io.arc.material.opacity) * easeK(dt, 3);
       // Progress arc grows smoothly to the latest estimate.
       const goal = Math.max(0, io.arcPct);
@@ -3295,6 +3374,12 @@ export async function startScene({ canvas, kbd, reduced }) {
       if (active) {
         perf.frames++; const ft = now - lastRender; if (lastRender && ft < 200) { perf.ms += ft; perf.avg = perf.ms / perf.frames; }
         perf.cpuMs = performance.now() - t0;
+        // Sustained slow frames (under ~22 fps over 90 frames): draw fewer pixels, down to 0.6 of the budget.
+        if (lastRender && ft < 1000) { slowWin.frames++; slowWin.ms += ft; }
+        if (slowWin.frames >= 90) {
+          if (slowWin.ms / slowWin.frames > 45 && slowK > 0.6) { slowK = Math.max(0.6, slowK * 0.8); layout(); console.info(`[observatory] slow frames: pixel scale ${slowK.toFixed(2)}`); }
+          slowWin.frames = 0; slowWin.ms = 0;
+        }
       }
       lastRender = now;
     }

@@ -106,6 +106,7 @@ export function createDemo(hooks) {
     b.companies[0].issues.push({ id: `ORB-${n}`, identifier: `ORB-${n}`, title: "Share recipes as cards", status: "todo", priority: "medium", assigneeAgentId: "a-nav2", assignee: "Nova Tester", updatedAt: now(), completedAt: null, lastComment: null, questions: [] });
     board = b; refreshAgents(); push(b); logLine(`ORB-${n}: new issue "Share recipes as cards" (to do)`, `ORB-${n}`);
   }
+  function raiseAlert() { const b = clone(board); b.alerts = [{ id: "demo-red", level: "critical", text: "ORB-5 run failed twice in a row", issueId: "ORB-5", identifier: "ORB-5", company: "ORB", since: now(), acked: false }]; board = b; push(b); logLine("▼▼ CRITICAL · ORB-5 run failed twice in a row", "ORB-5"); }
   function reset() { const f = makeData(); board = { ...board, companies: f.companies, eta: f.eta }; refreshAgents(); push(board); }
 
   // The script: one beat every ~6 s, then it loops.
@@ -125,7 +126,7 @@ export function createDemo(hooks) {
     () => setStatus("HLX-3", "in_progress"),
     () => estimate("HLX-1", 55),
     () => setStatus("TDE-2", "done"),
-    () => { const b = clone(board); b.alerts = [{ id: "demo-red", level: "critical", text: "ORB-5 run failed twice in a row", issueId: "ORB-5", identifier: "ORB-5", company: "ORB", since: now(), acked: false }]; board = b; push(b); logLine("▼▼ CRITICAL · ORB-5 run failed twice in a row", "ORB-5"); },
+    () => raiseAlert(),
     () => {},
     () => { const b = clone(board); b.alerts = []; board = b; push(b); },
     () => reset(),
@@ -142,6 +143,13 @@ export function createDemo(hooks) {
 
   async function act(action, p = {}) {
     if (action === "ack") { board = { ...board, alerts: (board.alerts ?? []).map((a) => (a.id === p.id ? { ...a, acked: true } : a)) }; push(clone(board)); return { ok: true }; }
+    // The guided tour asks for the thing a step explains, so it is on screen while the card is up.
+    if (action === "show") {
+      if (p.kind === "question") addQuestion();
+      else if (p.kind === "alert" && !(board.alerts ?? []).some((a) => !a.acked)) raiseAlert();
+      else if (p.kind === "events") { if (!agents.find((a) => a.id === "a-hel2")?.live) startRun("a-hel2"); newIssue(); }
+      return { ok: true };
+    }
     if (action === "available") return [{ id: "c-new", name: "Nebula Labs", prefix: "NEB", open: 3, total: 5, tracked: false }];
     if (action === "companies") throw new Error("Connecting projects is not available in the demo");
     if (action === "refresh") { push(clone(board)); return { ok: true }; }

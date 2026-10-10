@@ -6,7 +6,7 @@
 const KEY = "orbitSettings";
 export const DEFAULTS = {
   notify: { question: true, blocked: true, critical: true, done: false, quietFrom: "", quietTo: "", browser: false, mutedProjects: [] },
-  display: { labels: "all", showPct: true, textSize: "M", highContrast: false, kpis: ["agents", "prog", "block", "wait", "done", "overall"], clock24: false },
+  display: { labels: "all", showPct: true, textSize: "M", highContrast: false, kpis: ["agents", "prog", "block", "wait", "done", "overall"], clock24: false, busySky: false },
   motion: { tempo: 1, blur: true, reduce: "os", fovKick: true },
   visual: { tier: "auto", bloom: 1, dof: false, grain: true, density: 1, battery: false },
   camera: { sensitivity: 1, invert: false, autoFocus: false, tour: false, tourSec: 45 },
@@ -119,6 +119,7 @@ export function openSettingsPanel(ctx) {
   select("display.textSize", "Text size", [["S", "small"], ["M", "medium"], ["L", "large"]], "font");
   check("display.highContrast", "High contrast");
   check("display.clock24", "24-hour clock", "time format");
+  check("display.busySky", "Busy sky", "hostiles pods storms orbit lines calm");
 
   sec("Motion and visual");
   range("motion.tempo", "Motion tempo", 0.4, 1.6, 0.05, "speed slower faster");
@@ -147,7 +148,51 @@ export function openSettingsPanel(ctx) {
 
   sec("Data");
   check("data.pause", "Pause updates", "freeze");
-  check("data.eta", "Local-model ETA estimates", "estimate");
+  check("data.eta", "Model ETA estimates", "estimate");
+
+  // Language model (server side, config.json "llm"). Off by default: nothing is downloaded or contacted until
+  // a provider is picked here. Only on the computer itself; the phone sees which model is in use.
+  sec("Language model");
+  {
+    const L = ctx.store.board?.llm ?? { provider: "none" };
+    const host = ctx.store.mode === "host";
+    const status = el("span", { style: "font-size:12px;color:#8c8c8c" });
+    const say = (t) => { status.textContent = t; };
+    if (!host) row("Model", el("span", { textContent: L.provider === "none" ? "Off (set it on the computer)" : `${L.providers?.[L.provider] ?? L.provider} · ${L.model}` }), "llm ai");
+    else {
+      const prov = el("select");
+      for (const [v, t] of Object.entries(L.providers ?? { none: "Off", ollama: "Ollama", openai: "OpenAI-compatible", anthropic: "Anthropic" })) prov.appendChild(el("option", { value: v, textContent: t, selected: v === L.provider }));
+      row("Provider", prov, "llm ai ollama openai anthropic lm studio llama");
+      const url = row("Server address", el("input", { type: "url", value: L.baseUrl ?? "", placeholder: "default for the provider" }), "base url endpoint");
+      const model = row("Model", el("input", { type: "text", value: L.model ?? "", placeholder: "model name" }), "llm");
+      const key = row("API key", el("input", { type: "password", autocomplete: "off", placeholder: L.hasKey ? "saved (leave empty to keep)" : L.keyEnv ? `or set ${L.keyEnv}` : "not needed for local servers" }), "token secret");
+      const auto = el("input", { type: "checkbox", checked: !!L.autoEstimate }); row("Estimate automatically when issues change", auto, "eta auto");
+      const actions = el("span", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" });
+      const saveB = el("button", { type: "button", textContent: "Save" }), testB = el("button", { type: "button", textContent: "Test" }), listB = el("button", { type: "button", textContent: "List models" });
+      actions.append(saveB, testB, listB, status); row("", actions, "llm");
+      const sync = () => { const off = prov.value === "none"; for (const c of [url, model, key, auto, testB, listB]) c.disabled = off; };
+      prov.onchange = () => { url.value = ""; model.value = ""; sync(); say(prov.value === "none" ? "Save to turn the model off." : "Save, then Test."); };
+      sync();
+      saveB.onclick = async () => {
+        say("Saving…");
+        const body = { provider: prov.value, baseUrl: url.value.trim(), model: model.value.trim(), autoEstimate: auto.checked };
+        if (key.value.trim()) body.apiKey = key.value.trim();
+        try { const r = await ctx.act("llm", body); key.value = ""; url.value = r.baseUrl ?? ""; model.value = r.model ?? ""; key.placeholder = r.hasKey ? "saved (leave empty to keep)" : "not set"; say(r.provider === "none" ? "Off. Nothing is sent to a model." : `Saved: ${r.model}`); }
+        catch (e) { say(e.message); }
+      };
+      testB.onclick = async () => { say("Testing…"); try { const r = await ctx.act("llmTest"); say(r.ok ? `Works · ${r.model} · ${(r.ms / 1000).toFixed(1)} s` : "Answered, but not as expected"); } catch (e) { say(e.message); } };
+      listB.onclick = async () => {
+        say("Asking the server…");
+        try {
+          const { models } = await ctx.act("llmModels");
+          if (!models.length) return say("No models found on that server.");
+          const pick = el("select"); for (const m of models) pick.appendChild(el("option", { value: m, textContent: m, selected: m === model.value }));
+          pick.onchange = () => { model.value = pick.value; };
+          status.replaceChildren(pick);
+        } catch (e) { say(e.message); }
+      };
+    }
+  }
 
   sec("Float");
   button("Float window", "On / off", () => ctx.actions.floatToggle(), "picture in picture pip");

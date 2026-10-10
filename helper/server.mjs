@@ -2,8 +2,8 @@
 // No dependencies. Polls the Paperclip API on an interval, records status changes and new
 // questions in log.jsonl, and serves index.html plus a small JSON API.
 //   node server.mjs   → http://127.0.0.1:4320
-// Writes to Paperclip only when the page POSTs an answer. ETA estimates use the local
-// Ollama model and run only when the page asks for one.
+// Writes to Paperclip only when the page POSTs an answer. Estimates and the question helper use the
+// language model the user picked in settings (llm.mjs); none is contacted until they pick one.
 import { createServer } from "node:http";
 import { readFile, writeFile, appendFile, rename, chmod, stat as fstat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -26,9 +26,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.ORBIT_DATA_DIR ? resolve(process.env.ORBIT_DATA_DIR) : here;
 await mkdir(DATA, { recursive: true });
 let PAPERCLIP = (process.env.PAPERCLIP_URL ?? "http://localhost:3100").replace(/\/$/, "") + "/api";
-const OLLAMA = (process.env.OLLAMA_URL ?? "http://localhost:11434").replace(/\/$/, "");
 const PORT = Number(process.env.BOARD_PORT ?? 4320);
-const MODELS = ["qwen2.5-coder:7b", "qwen3:4b"];
 const LOG_KEEP = 500;
 
 // Tracked companies: config.json "companies" pins a list; without it, every active company in
@@ -54,7 +52,7 @@ async function writeJson(name, value, opts = {}) {
 let config = { intervalSec: 15, host: "127.0.0.1", phoneUrl: "https://thenewurbankid-web.github.io/orbit/", ...(await readJson("config.json", {})) };
 // config.json "paperclipUrl" (or the PAPERCLIP_URL env var) points the board at another Paperclip.
 if (config.paperclipUrl && !process.env.PAPERCLIP_URL) PAPERCLIP = String(config.paperclipUrl).replace(/\/$/, "") + "/api";
-const ALERT_DEFAULTS = { unreachableMin: 2, blockedHighMin: 30, questionWarnMin: 30, questionCritMin: 120, blockedPerCompany: 3, notify: true, notifyLevel: "critical" };
+const ALERT_DEFAULTS = { unreachableMin: 2, blockedHighMin: 30, questionWarnMin: 30, questionCritMin: 120, blockedPerCompany: 3, stuckWarnH: 4, stuckCritH: 12, notify: true, notifyLevel: "critical" };
 config.alerts = { ...ALERT_DEFAULTS, ...(config.alerts ?? {}) };
 const autoCompanies = () => !Array.isArray(config.companies);
 if (!autoCompanies()) COMPANIES.push(...config.companies);
@@ -335,6 +333,7 @@ async function poll() {
       board = { ...board, error: String(error?.message ?? error) };
     } finally {
       await evaluateAlerts().catch((e) => console.error("alerts:", e.message));
+      await refreshLlmInfo();
       polling = null;
     }
   })();
@@ -401,32 +400,18 @@ function queueEstimates(ids) {
   return fresh;
 }
 
-// One structured call to the local Ollama model, falling back to the next model on failure.
-export async function ollamaJson(messages, schema, { timeoutMs = 90000 } = {}) {
-  let lastErr;
-  for (const model of MODELS) {
-    try {
-      const res = await fetch(OLLAMA + "/api/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        signal: AbortSignal.timeout(timeoutMs),
-        body: JSON.stringify({
-          model, stream: false, keep_alive: "15s", ...(model.startsWith("qwen3") ? { think: false } : {}),
-          options: { temperature: 0.2, num_ctx: 8192 },
-          format: schema,
-          messages,
-        }),
-      });
-      if (!res.ok) throw new Error(`Ollama ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      return { out: JSON.parse((await res.json()).message.content), model };
-    } catch (error) { lastErr = error; }
-  }
-  throw lastErr ?? new Error("no model answered");
-}
+// The language model (llm.mjs). A copy updated by an older control centre may lack llm.mjs: then
+// estimates and the helper say so instead of the service failing to start.
+const llmMod = await import("./llm.mjs").catch(() => null);
+const llm = llmMod ? llmMod.createLlm({ dataDir: DATA, config: () => config }) : {
+  json: async () => { throw Object.assign(new Error("The language model needs one more Orbit update: open This computer in the control centre and update."), { status: 503 }); },
+  enabled: () => false, status: async () => ({ provider: "none", missing: true }), models: async () => [], test: async () => ({ ok: false }), setKey: async () => {}, cfg: () => ({}),
+};
 
 async function estimate(identifier) {
   const found = findIssue(identifier);
   if (!found) throw new Error(`Unknown issue ${identifier}`);
+  if (!llm.enabled()) return; // turned off while queued
   const full = await api(`/issues/${found.issue.id}`);
   const comments = list(await api(`/issues/${found.issue.id}/comments`), "comments").filter((c) => !c.deletedAt).slice(0, 8).reverse();
   const prompt = [
@@ -457,7 +442,7 @@ async function estimate(identifier) {
     required: ["done", "left", "pct", "eta", "note"],
   };
   try {
-    const { out, model } = await ollamaJson([{ role: "user", content: prompt }], schema);
+    const { out, model } = await llm.json([{ role: "user", content: prompt }], schema);
     const status = full.status;
     let pct = Math.max(0, Math.min(100, Math.round(Number(out.pct) || 0)));
     if (status === "todo") pct = Math.min(pct, 5);
@@ -478,13 +463,15 @@ async function estimate(identifier) {
   await writeJson("eta.json", eta);
 }
 
-const helper = createHelper({ api, list, board: () => board, ollamaJson, repos: () => config.repos ?? {} });
+const helper = createHelper({ api, list, board: () => board, ollamaJson: (...a) => llm.json(...a), repos: () => config.repos ?? {} });
 
 // Auto-estimates, paced by the poll: re-estimate issues whose status changed or that got a new
 // comment; otherwise refresh the single oldest estimate when nothing is queued.
 const seenForEta = new Map(); // issueId → {status, commentId}
 let etaPrimed = false;
 function autoEstimate(companies) {
+  // Only with a model the user picked AND automatic estimates switched on; otherwise estimates run on request.
+  if (!llm.enabled() || !llm.cfg().autoEstimate) { etaPrimed = false; seenForEta.clear(); return; }
   const open = companies.flatMap((c) => c.issues).filter((i) => OPEN.has(i.status));
   const changed = [];
   for (const i of open) {
@@ -510,7 +497,7 @@ async function pollRuns() {
   const out = [];
   await Promise.all(COMPANIES.map(async (c) => {
     const rs = list(await api(`/companies/${c.id}/heartbeat-runs?limit=12`).catch(() => []), "runs");
-    for (const r of rs) out.push({ id: r.id, status: r.status, issueId: r.contextSnapshot?.issueId ?? r.issueId ?? null, company: c.prefix, finishedAt: r.finishedAt, error: r.error ?? null });
+    for (const r of rs) out.push({ id: r.id, status: r.status, issueId: r.contextSnapshot?.issueId ?? r.issueId ?? null, company: c.prefix, startedAt: r.startedAt ?? r.createdAt ?? null, finishedAt: r.finishedAt, error: r.error ?? null });
   }));
   recentRuns = out;
 }
@@ -548,6 +535,23 @@ async function evaluateAlerts() {
     if (i.status === "in_review" && /\b(tests? (are )?fail|failing tests?|\d+ failed)\b/i.test(i.lastComment?.full ?? "")) add(`testsfail:${i.id}`, "critical", `${i.identifier} is in review but tests are failing`, ctx);
   }
   for (const [co, n] of Object.entries(blockedBy)) if (n >= A.blockedPerCompany) add(`blocked3:${co}`, "critical", `${n} blocked issues in ${co}`, { company: co });
+  // Stuck project: open work, not paused, no question waiting on the owner (that has its own alert), and
+  // nothing has moved for stuckWarnH / stuckCritH hours: no issue update, comment, completion or agent run.
+  const t = (x) => { const v = x ? new Date(x).getTime() : 0; return Number.isFinite(v) ? v : 0; };
+  for (const c of board.companies) {
+    if (c.paused || !A.stuckWarnH) continue;
+    const open = c.issues.filter((i) => OPEN.has(i.status));
+    if (open.some((i) => i.questions?.length)) continue;
+    let last = 0;
+    for (const i of c.issues) last = Math.max(last, t(i.updatedAt), t(i.lastComment?.at), t(i.completedAt));
+    for (const r of recentRuns) if (r.company === c.prefix) last = Math.max(last, t(r.finishedAt), t(r.startedAt));
+    for (const a of chat.snapshot().agents ?? []) if (a.company === c.prefix && (a.live || a.queued)) last = now; // a run in flight is movement
+    if (!last || !open.length) continue;
+    const h = (now - last) / 3600e3;
+    const ago = h >= 48 ? `${Math.round(h / 24)} days` : `${Math.round(h)} h`;
+    if (A.stuckCritH && h >= A.stuckCritH) add(`stuck:${c.prefix}`, "critical", `${c.name ?? c.prefix} stuck: nothing moved for ${ago}`, { company: c.prefix });
+    else if (h >= A.stuckWarnH) add(`stuck:${c.prefix}`, "warning", `${c.name ?? c.prefix} quiet: nothing moved for ${ago}`, { company: c.prefix });
+  }
 
   const entries = [], ts = new Date().toISOString();
   for (const [id, a] of Object.entries(found)) {
@@ -661,6 +665,10 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+// What the page knows about the language model (no key). Refreshed after each poll and each change.
+let llmInfo = { provider: "none" };
+const refreshLlmInfo = async () => { llmInfo = await llm.status().catch(() => llmInfo); };
+await refreshLlmInfo();
 function boardView() {
   return {
     ...board,
@@ -670,6 +678,7 @@ function boardView() {
     etaRunning: [...etaRunning],
     phoneUrl: config.phoneUrl,
     alerts: alertView(),
+    llm: llmInfo,
     tracked: COMPANIES.map((c) => ({ id: c.id, name: c.name, prefix: c.prefix, planet: c.planet ?? null })),
     agents: chat.snapshot().agents,
   };
@@ -764,6 +773,8 @@ const server = createServer(async (req, res) => {
         return;
       }
       if (p === "/api/board") return json(res, 200, boardView());
+      if (p === "/api/llm") return json(res, 200, await llm.status());
+      if (p === "/api/llm/models") return json(res, 200, { models: await llm.models() });
       if (p === "/api/log") {
         let log = await readLog();
         const company = url.searchParams.get("company");
@@ -810,6 +821,26 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, result: result ?? null });
       }
       if (p === "/api/companies") return json(res, 200, await changeCompanies(await readBody(req)));
+      if (p === "/api/llm") {
+        // Pick the language model. Changing the provider or server drops a stored key unless a new one comes
+        // with it, so a key is never sent to a server it was not entered for.
+        const b = await readBody(req), prev = llm.cfg();
+        const next = { ...(config.llm ?? {}) };
+        if (b.provider !== undefined) { if (!llmMod?.PROVIDERS[b.provider]) return json(res, 400, { error: "unknown provider" }); next.provider = b.provider; }
+        if (b.baseUrl !== undefined) { const u = String(b.baseUrl).trim(); if (u && !/^https?:\/\/[^\s]+$/.test(u)) return json(res, 400, { error: "server address must start with http:// or https://" }); next.baseUrl = u; }
+        if (b.provider !== undefined && b.provider !== prev.provider && b.baseUrl === undefined) next.baseUrl = "";
+        if (b.model !== undefined) next.model = String(b.model).trim().slice(0, 200);
+        if (b.provider !== undefined && b.provider !== prev.provider && b.model === undefined) next.model = "";
+        if (b.autoEstimate !== undefined) next.autoEstimate = Boolean(b.autoEstimate);
+        config = { ...config, llm: next };
+        await writeJson("config.json", config);
+        const now = llm.cfg();
+        if (typeof b.apiKey === "string" && b.apiKey.trim()) await llm.setKey(b.apiKey);
+        else if (b.apiKey === null || now.provider !== prev.provider || now.baseUrl !== prev.baseUrl) await llm.setKey(null);
+        await refreshLlmInfo();
+        return json(res, 200, llmInfo);
+      }
+      if (p === "/api/llm/test") return json(res, 200, await llm.test());
       if (p === "/api/alerts/ack") {
         const body = await readBody(req);
         const a = alerts[String(body.id ?? "")];
@@ -826,6 +857,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, await helper.ask(String(body.interaction ?? ""), body.text));
       }
       if (p === "/api/eta") {
+        if (!llm.enabled()) return json(res, 409, { error: "No language model is connected. Pick one in Settings → Language model.", code: "llm_off" });
         const issue = url.searchParams.get("issue");
         const company = url.searchParams.get("company");
         let targets = [];

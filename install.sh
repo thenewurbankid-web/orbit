@@ -10,9 +10,9 @@ set -eu
 
 # Written by helper/build.mjs. ORBIT_REF pins a commit of github.com/thenewurbankid-web/orbit; without
 # one, files come from the website itself.
-ORBIT_REF="2d7c10604cabec6ea41f8b59a0802bad3d0ab830"
-SUM_MAC="864c3cca478e7819a1fba5c862c590cb85d567cd03776a271d9bb073cae23653"
-SUM_LINUX="a0026387ff6768a3bd73cd0ebb1487ab11f0b8eb6aa4a51bc4c7a9fee814e746"
+ORBIT_REF=""
+SUM_MAC="06189d97420a99ee26871e5c25b0b3a5452c2df7849ce4fa064ec31ecc6d2529"
+SUM_LINUX="201603b15f5ce2043832ab7cd2a6dfb676dd829b8728286aeb69efd6cce029f8"
 ORBIT_BASE="${ORBIT_BASE:-https://thenewurbankid-web.github.io/orbit}"
 
 say() { printf '%s\n' "$*"; }

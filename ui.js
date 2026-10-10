@@ -164,20 +164,21 @@ const ICONS = {
   aurora: ICON(`<circle cx="18" cy="22" r="10"/><path d="M10 12q8-6 16 0" stroke="#7affc8"><animate attributeName="stroke-opacity" values=".3;1;.3" dur="2s" repeatCount="indefinite"/></path>`),
   red: ICON(`<rect x="4" y="4" width="28" height="28" rx="3" stroke="#ff5040"><animate attributeName="stroke-opacity" values=".3;1;.3" dur="1.4s" repeatCount="indefinite"/></rect><path d="M18 11v9M18 24v1" stroke="#ff8070"/>`),
 };
-export function openHelp() {
+export function openHelp({ onTour } = {}) {
   const sections = {
     "What": `<p>A live mission view of your Paperclip AI companies. Each project is a planet; the agents working on it are moons; their issues are small satellites.</p><p>It reads Paperclip on this Mac every few seconds. It only writes when you answer a question or send a message.</p>`,
-    "Reading it": `<p>Satellites orbit closer the further along they are. The thin arc on each orbit is its rough % done (from a small local model, so treat it as a guess). The numbers at the top are agents working, issues in progress, blocked, and questions waiting on you.</p>
+    "Reading it": `<p>Satellites orbit closer the further along they are. The thin arc on each orbit is its rough % done (from the language model you connected in Settings, so treat it as a guess; none is connected by default). The numbers at the top are agents working, issues in progress, blocked, and questions waiting on you.</p>
       <dl><dt>${ICONS.ufo}</dt><dd>UFO: an agent started a run. Its beam stays while it works.</dd>
       <dt>${ICONS.meteor}</dt><dd>Meteor: an issue is done.</dd>
       <dt>${ICONS.comet}</dt><dd>Comet: a new issue arrived.</dd>
-      <dt>${ICONS.hostile}</dt><dd>Hostile ship: a question is waiting for you. Tap it to answer.</dd>
-      <dt>${ICONS.storm}</dt><dd>Storm: an issue is blocked.</dd>
+      <dt>${ICONS.hostile}</dt><dd>Amber satellite: a question is waiting for you. Tap it to answer. With Settings → Display → Busy sky on, a hostile ship hovers in view too.</dd>
+      <dt>${ICONS.storm}</dt><dd>Storm: an issue is blocked (one per planet; Busy sky shows up to three).</dd>
       <dt>${ICONS.ice}</dt><dd>Ice on a moon: no update for over 2 hours.</dd>
       <dt>${ICONS.aurora}</dt><dd>Aurora: good news (done, merged).</dd>
       <dt>${ICONS.red}</dt><dd>Red alert: something critical needs you (failed runs, long-blocked high-priority work, Paperclip down). Tap the banner to look and acknowledge.</dd></dl>`,
     "Using it": `<p>Tap a planet, moon or satellite to fly to it; double-tap or pinch out to go back; drag to look around.</p>
-      <p><b>Questions:</b> open one and pick an answer. Your answer flies out as a fighter; if it lands, the hostile ship is beaten. If sending fails, the question stays open.</p>
+      <p><b>Questions:</b> open one and pick an answer. With Busy sky on, your answer flies out as a fighter and beats the hostile ship. If sending fails, the question stays open.</p>
+      <p><b>Calm or busy:</b> the sky is calm by default: orbit lines show only on the planet you are looking at. Settings → Display → Busy sky brings back every orbit, the hostile ships, the incoming pods and more storms.</p>
       <p><b>Agents:</b> tap a moon to see what the agent is doing and write to it (your message becomes a comment on its issue).</p>
       <p><b>Estimates:</b> tap "estimate" on a satellite for a fresh rough guess.</p>
       <p><b>Sound and alerts:</b> the bottom strip has sound on/off and volume. Critical alerts sound a klaxon until you acknowledge them.</p>
@@ -194,15 +195,16 @@ export function openHelp() {
       <p><b>The board</b> runs as a small service at <code>127.0.0.1:4320</code> (see "Connect this computer" to add or remove it).</p>
       <p><b>Projects:</b> use "+ project" to connect another Paperclip company, or a second Paperclip by URL. Long-press a planet to disconnect it.</p>
       <p><b>Phone:</b> tap "pair phone" and scan the QR code, then paste the phone's reply code back here. On the same Wi-Fi you can also open the link with the access key printed by the service.</p>
-      <p><b>Estimates</b> use Ollama on this computer (<code>qwen2.5-coder:7b</code>).</p>
+      <p><b>Estimates</b> and question briefings use the language model you pick in Settings → Language model (Ollama, any OpenAI-compatible server or Anthropic). Off until you pick one; Orbit never downloads a model.</p>
       <p><b>Settings</b> live in <code>config.json</code> in the Orbit folder (poll interval, projects, alert thresholds, notifications).</p>`,
   };
   const keys = Object.keys(sections);
-  const p = frostPanel(`<h2>HELP</h2><div class="tabs">${keys.map((k, i) => `<button class="dim ${i ? "" : "sel"}" data-k="${k}">${k.toUpperCase()}</button>`).join("")}</div><div class="scroll"></div><div class="btns"><button class="dim close">CLOSE</button></div>`, { width: 560 });
+  const p = frostPanel(`<h2>HELP</h2><div class="tabs">${keys.map((k, i) => `<button class="dim ${i ? "" : "sel"}" data-k="${k}">${k.toUpperCase()}</button>`).join("")}</div><div class="scroll"></div><div class="btns">${onTour ? `<button class="tour">TAKE THE TOUR</button>` : ""}<button class="dim close">CLOSE</button></div>`, { width: 560 });
   const body = p.el.querySelector(".scroll");
   const show = (k) => { body.innerHTML = sections[k]; p.el.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("sel", b.dataset.k === k)); body.querySelector(".oc-open")?.addEventListener("click", () => { p.close(); window.orbitConnect?.openConnect(); }); };
   p.el.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => show(b.dataset.k)));
   p.el.querySelector(".close").onclick = () => p.close();
+  const tb = p.el.querySelector(".tour"); if (tb) tb.onclick = () => { p.close(); onTour(); };
   show(keys[0]);
   return p;
 }

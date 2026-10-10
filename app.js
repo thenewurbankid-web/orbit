@@ -129,6 +129,10 @@ const hostActions = {
   async projectMessage(p) { const r = await http("api/project-message", { method: "POST", body: JSON.stringify(p) }); hostLoad(); return r; },
   async projectPoc(p) { const r = await http("api/project-poc", { method: "POST", body: JSON.stringify(p) }); await hostLoad(); return r; },
   async projectWork(p) { const r = await http("api/project-work", { method: "POST", body: JSON.stringify(p) }); await hostLoad(); return r; },
+  // Language model: set on the computer only (keys never cross to the phone).
+  async llm(p) { const r = await http("api/llm", { method: "POST", body: JSON.stringify(p) }); await hostLoad(); return r; },
+  async llmTest() { return http("api/llm/test", { method: "POST" }); },
+  async llmModels() { return http("api/llm/models"); },
   async config(p) { const r = await http("api/config", { method: "POST", body: JSON.stringify({ intervalSec: p.intervalSec }) }); await hostLoad(); return r; },
 };
 let etaWatch = null;
@@ -332,6 +336,10 @@ function remoteRequest(action, payload) {
 }
 
 // ---------------- question helper (local model briefing) ----------------
+// The language model the user picked in Settings (none until then). Without one, no briefing, ask or
+// estimate control is shown and nothing is sent to a model.
+export const llmOn = () => Boolean(store.board?.llm?.provider && store.board.llm.provider !== "none");
+export const llmName = () => store.board?.llm?.model || "the model";
 // Cache per question: {state: 'loading'|'ready'|'error', view, error, asking}
 export const helperState = new Map();
 export async function helperBrief(interaction) {
@@ -354,8 +362,9 @@ export async function helperAsk(interaction, text) {
 export function helperLines(interaction) {
   // Plain lines for both views: [{text, kind}] kind: head|body|dim|amber|meter|q|a
   const h = helperState.get(interaction);
-  const out = [{ text: "Local model briefing · may be wrong", kind: "head" }];
-  if (!h || h.state === "loading") return [...out, { text: "Gathering context and asking the local model…", kind: "dim" }];
+  const out = [{ text: `Briefing from ${llmName()} · may be wrong`, kind: "head" }];
+  if (!h) return [];
+  if (h.state === "loading") return [...out, { text: "Gathering context and asking the model…", kind: "dim" }];
   if (h.state === "error") return [...out, { text: "The briefing failed: " + h.error, kind: "dim" }];
   const v = h.view, b = v.brief;
   if (b) {
@@ -435,7 +444,7 @@ function etaText(id) {
   return bar(e.pct) + " " + etaTextInner(e) + (store.board?.etaRunning?.includes(id) ? ` <span class="muted">· estimating…</span>` : "");
 }
 function etaTextInner(e) {
-  return `~${e.pct}% · ETA ${esc(e.eta)} <span class="muted">(rough local-model estimate, estimated ${ago(e.at)})</span>${e.done?.length ? `<br><span class="muted">Done: ${esc(e.done.join("; "))}</span>` : ""}${e.left?.length ? `<br><span class="muted">Left: ${esc(e.left.join("; "))}</span>` : ""}`;
+  return `~${e.pct}% · ETA ${esc(e.eta)} <span class="muted">(rough model estimate, estimated ${ago(e.at)})</span>${e.done?.length ? `<br><span class="muted">Done: ${esc(e.done.join("; "))}</span>` : ""}${e.left?.length ? `<br><span class="muted">Left: ${esc(e.left.join("; "))}</span>` : ""}`;
 }
 
 function renderList() {
@@ -464,13 +473,13 @@ function renderList() {
   for (const c of b.companies) {
     const open = c.issues.filter((i) => OPEN.includes(i.status));
     const done = c.issues.filter((i) => !OPEN.includes(i.status));
-    h += `<section><div class="row" style="margin:0"><h2>${esc(c.name)}</h2><span class="mono muted">${c.prefix}</span><span class="small muted">${open.length} open</span>${companyProgress(c) != null ? `<span class="small">${bar(companyProgress(c))} ~${companyProgress(c)}% overall <span class="muted">(rough local-model estimate)</span></span>` : ""}${open.length ? `<button data-l="etaAll" data-c="${c.prefix}">Estimate all</button>` : ""}</div>`;
+    h += `<section><div class="row" style="margin:0"><h2>${esc(c.name)}</h2><span class="mono muted">${c.prefix}</span><span class="small muted">${open.length} open</span>${companyProgress(c) != null ? `<span class="small">${bar(companyProgress(c))} ~${companyProgress(c)}% overall <span class="muted">(rough model estimate)</span></span>` : ""}${open.length && llmOn() ? `<button data-l="etaAll" data-c="${c.prefix}">Estimate all</button>` : ""}</div>`;
     for (const i of open) {
       const running = b.etaRunning?.includes(i.identifier);
       h += `<div class="issue"><div class="row" style="margin:0"><span class="pill s-${i.status}">${STATUS[i.status]}</span><span class="mono">${esc(i.identifier)}</span><span class="small muted">${esc(i.priority)} · ${esc(i.assignee || "unassigned")} · updated ${ago(i.updatedAt)}</span></div>
         <div><strong>${esc(i.title)}</strong></div>
         ${i.lastComment ? `<details><summary class="small"><span class="muted">${esc(i.lastComment.author)}, ${ago(i.lastComment.at)}:</span> ${esc(i.lastComment.text)}</summary><div class="full">${esc(i.lastComment.full)}</div></details>` : ""}
-        <div class="row small">${etaText(i.identifier)} <button data-l="eta" data-i="${esc(i.identifier)}" ${running ? "disabled" : ""}>${running ? "Estimating…" : "Estimate"}</button></div></div>`;
+        <div class="row small">${etaText(i.identifier)} ${llmOn() ? `<button data-l="eta" data-i="${esc(i.identifier)}" ${running ? "disabled" : ""}>${running ? "Estimating…" : "Estimate"}</button>` : ""}</div></div>`;
     }
     if (done.length) h += `<details><summary class="small muted">Done and closed (${done.length})</summary>${done.map((i) => `<div class="issue small"><span class="mono">${esc(i.identifier)}</span> ${esc(i.title)}</div>`).join("")}</details>`;
     const lg = store.log.filter((e) => e.company === c.prefix).slice(0, 20);
@@ -519,9 +528,11 @@ function questionHtml(company, issue, q) {
     h += `<p><strong>${esc(p.prompt || q.title)}</strong></p>${p.detailsMarkdown ? `<div class="details">${esc(p.detailsMarkdown)}</div>` : ""}`;
     h += `<div class="row"><button class="primary" data-l="accept" data-q="${esc(k)}">${esc(p.acceptLabel || "Accept")}</button><button data-l="reject" data-q="${esc(k)}">${esc(p.rejectLabel || "Reject")}</button></div>`;
   }
-  if (!helperState.has(k)) helperBrief(k);
-  h += `<div class="details" style="margin-top:8px">${helperLines(k).map((l) => `<div class="${l.kind === "head" || l.kind === "dim" || l.kind === "meter" ? "muted small" : ""}">${esc(l.text)}</div>`).join("")}</div>`;
-  h += `<div class="row"><input type="text" style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--sheet)" data-hask="${esc(k)}" placeholder="Ask the local model about this (only what it gathered)"><button data-l="hask" data-q="${esc(k)}">Ask</button></div>`;
+  if (llmOn() && !helperState.has(k)) h += `<div class="row"><button data-l="hbrief" data-q="${esc(k)}">Brief me (${esc(llmName())})</button></div>`;
+  if (helperState.has(k)) {
+    h += `<div class="details" style="margin-top:8px">${helperLines(k).map((l) => `<div class="${l.kind === "head" || l.kind === "dim" || l.kind === "meter" ? "muted small" : ""}">${esc(l.text)}</div>`).join("")}</div>`;
+    if (llmOn()) h += `<div class="row"><input type="text" style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--sheet)" data-hask="${esc(k)}" placeholder="Ask the model about this (only what it gathered)"><button data-l="hask" data-q="${esc(k)}">Ask</button></div>`;
+  }
   h += `<textarea data-draft="${esc(k)}" placeholder="Or write your own answer (also the reason if you reject)">${esc(d.text)}</textarea><div class="row"><button data-l="qcomment" data-q="${esc(k)}">Send as comment</button></div><div class="err small" id="lerr-${esc(k)}"></div></div>`;
   return h;
 }
@@ -569,6 +580,7 @@ document.addEventListener("click", async (ev) => {
       await act("comment", { issueId, text });
       ui.chatText = ""; return note("Sent.");
     }
+    if (l === "hbrief") { await helperBrief(b.dataset.q); return; }
     if (l === "hask") { const inp = document.querySelector(`[data-hask="${b.dataset.q}"]`); const t = inp?.value.trim(); if (t) { inp.value = ""; await helperAsk(b.dataset.q, t); } return; }
     if (l === "opt") {
       const d = ui.drafts[b.dataset.q]; const cur = d.sel[b.dataset.qq] || [];
@@ -670,7 +682,7 @@ export async function openConnectPanel(done) {
     done?.(c ? { id: c.id, name: c.name, prefix: c.prefix, open: null } : null);
   } });
 }
-export async function openHelpPanel() { (await import("./ui.js")).openHelp(); }
+export async function openHelpPanel() { (await import("./ui.js")).openHelp({ onTour: store.board ? () => store.emit("startTour") : null }); }
 function lastSelection() { try { const v = localStorage.getItem("lastSelection"); return v === "demo" ? "demo" : v ? JSON.parse(v) : null; } catch { return null; } }
 function saveSelection(pick) { try { localStorage.setItem("lastSelection", pick.demo ? "demo" : JSON.stringify(pick.ids)); } catch {} }
 

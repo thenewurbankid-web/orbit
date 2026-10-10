@@ -13,12 +13,15 @@ export function detectTier(renderer) {
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
     gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
   } catch { /* ignore */ }
-  const weakGpu = /SwiftShader|llvmpipe|Software|Mali-4|Mali-T|Adreno \(TM\) [345]\d\d|PowerVR SGX|Intel\(R\) HD Graphics [2-5]/i.test(gpu);
+  const weakGpu = /SwiftShader|llvmpipe|Software|Mali-4|Mali-T|Adreno \(TM\) [345]\d\d|PowerVR SGX|Intel\(R\) HD Graphics [2-5]|Intel\(R\) (UHD|Iris|HD) Graphics|Intel Iris|ANGLE \(Intel/i.test(gpu);
   const mem = navigator.deviceMemory ?? 8;
   const cores = navigator.hardwareConcurrency ?? 8;
-  // High by default everywhere. Only a known-weak GPU (or a low-memory Android phone) steps down.
+  // High by default. A known-weak or integrated Intel GPU steps down, and so does a page whose last GPU context was
+  // lost (scene.js records that in "orbit.gpuLost"): a board that froze a computer once starts lighter next time.
   let name = "high";
   if (weakGpu) name = mobile ? "low" : "medium";
+  let lost = 0; try { lost = Number(localStorage.getItem("orbit.gpuLost")) || 0; } catch {}
+  if (lost >= 2) name = "low"; else if (lost === 1 && name === "high") name = "medium";
   else if (mobile && /Android/i.test(ua) && navigator.deviceMemory && navigator.deviceMemory <= 3) name = "medium";
   // A chosen tier wins: ?tier=high|medium|low (remembered), or the settings panel's saved choice.
   const forced = new URLSearchParams(location.search).get("tier");
@@ -26,8 +29,8 @@ export function detectTier(renderer) {
   if (["low", "medium", "high"].includes(forced)) { name = forced; try { localStorage.setItem("orbit.tier", forced); } catch {} }
   else if (["low", "medium", "high"].includes(saved)) name = saved;
   const t = {
-    high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 60 },
-    medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 30 },
+    high: { stars: 9000, particles: 1000, bloomScale: 1, dpr: 2, frostOctaves: 1, transmission: true, nebula: 8, fpsIdle: 20 },
+    medium: { stars: 4500, particles: 600, bloomScale: 0.75, dpr: 2, frostOctaves: 1, transmission: false, nebula: 6, fpsIdle: 12 },
     low: { stars: 1500, particles: 220, bloomScale: 0.35, dpr: 1, frostOctaves: 0, transmission: false, nebula: 3, fpsIdle: 6 },
   }[name];
   return { name, mobile, gpu, ...t };
