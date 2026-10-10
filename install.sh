@@ -10,7 +10,7 @@ set -eu
 
 # Written by helper/build.mjs. ORBIT_REF pins a commit of github.com/thenewurbankid-web/orbit; without
 # one, files come from the website itself.
-ORBIT_REF=""
+ORBIT_REF="6ec7b0e74faddac2c31946c9ed78173908ece528"
 SUM_MAC="811635fc72bf231fec319755b705bd356a99a32571c6deff635f1ddafe59ce6f"
 SUM_LINUX="1888911bad5a70c0e5f924a71ff29323e47f503ae93575af37e9fdb282f9a98b"
 ORBIT_BASE="${ORBIT_BASE:-https://thenewurbankid-web.github.io/orbit}"
