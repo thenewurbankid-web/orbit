@@ -151,7 +151,7 @@ export function createFrame(host) {
     // 4. Glass: faint reflection band and slightly darker edges (no blur).
     const g = el("g", { "clip-path": "url(#obs-open)" }, svg);
     el("rect", { width: W, height: H, fill: "url(#obs-glass)" }, g);
-    el("rect", { x: m.x0, y: m.y0, width: m.x1 - m.x0, height: m.y1 - m.y0, fill: "url(#obs-edge)" }, g);
+    el("rect", { x: m.x0, y: m.y0, width: Math.max(0, m.x1 - m.x0), height: Math.max(0, m.y1 - m.y0), fill: "url(#obs-edge)" }, g); // a tiny or hidden window can make the opening negative
     // 5. Console strip.
     el("path", { d: P([[st.x + 0.5, st.y + 0.5], [st.x + st.w - 0.5, st.y + 0.5], [st.x + st.w - 0.5, st.y + st.h - 0.5], [st.x + 0.5, st.y + st.h - 0.5]], 5), fill: "none", stroke: "rgba(255,255,255,0.07)", "stroke-width": 0.75 }, svg);
     for (const [fx, col] of [[0.012, "#3fa36a"], [0.024, "#c8a046"], [0.976, "#5aa7c8"], [0.988, "#3fa36a"]]) el("circle", { cx: st.x + st.w * fx + (fx < 0.5 ? 5 : -5), cy: st.y + st.h / 2, r: m.phone ? 1.3 : 1.6, fill: col, opacity: 0.75 }, svg);
