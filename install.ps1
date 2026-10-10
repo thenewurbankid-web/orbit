@@ -7,7 +7,7 @@
 # %LOCALAPPDATA%\Orbit, it starts at login from your Startup folder. No admin needed.
 $ErrorActionPreference = 'Stop'
 # Written by helper/build.mjs.
-$OrbitRef = ''
+$OrbitRef = '00eb5a0d3cefd15aef9a4a870c2d721c6fded787'
 $SumWindows = 'cd0b7f16d58b721c32f8cbd31d29702f924f2dfc4f83044655f6fb30cb76d302'
 $OrbitBase = if ($env:ORBIT_BASE) { $env:ORBIT_BASE } else { 'https://thenewurbankid-web.github.io/orbit' }
 
